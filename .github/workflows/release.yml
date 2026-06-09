@@ -22,7 +22,7 @@ jobs:
             os: macos-14 # Apple Silicon,原生 arm64
             platform: macos
             target: aarch64-apple-darwin
-            package-types: macos
+            package-types: dmg
           - name: windows-x64
             os: windows-latest # x86_64
             platform: windows
@@ -70,13 +70,10 @@ jobs:
         shell: bash
         run: |
           mkdir -p artifacts
-          # .app 是目录,打成 tar.gz 便于上传/下载
-          app=$(find target -type d -name '*.app' -path '*bundle*' | head -n1)
-          if [ -n "$app" ]; then
-            tar -C "$(dirname "$app")" -czf "artifacts/ProxyZms-${{ matrix.name }}.app.tar.gz" "$(basename "$app")"
-          fi
-          # 若同时产出了 dmg 也一并带上
-          find target -type f -name '*.dmg' -path '*bundle*' -exec cp {} "artifacts/ProxyZms-${{ matrix.name }}.dmg" \;
+          # dx bundle --package-types dmg 产出:target/dx/proxy-zms/bundle/macos/macos/*.dmg
+          dmg=$(find target -type f -name '*.dmg' -path '*bundle*' | head -n1)
+          if [ -z "$dmg" ]; then echo "::error::未找到 dmg 产物"; exit 1; fi
+          cp "$dmg" "artifacts/ProxyZms-${{ matrix.name }}.dmg"
           ls -la artifacts
 
       - name: Collect artifacts (Windows)
