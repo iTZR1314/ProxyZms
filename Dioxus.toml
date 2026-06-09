@@ -1,0 +1,27 @@
+[application]
+
+# 发布打包时的应用图标(macOS .app / Windows .exe)
+[bundle]
+identifier = "top.zhoumaosen"
+icon = ["assets/fmr.ico", "assets/fmr.png"]
+publisher = "ZHOUMAOSEN"
+
+[web.app]
+
+# HTML title tag content
+title = "proxy-zms"
+
+# include `assets` in web platform
+[web.resource]
+
+# Additional CSS style files
+style = []
+
+# Additional JavaScript files
+script = []
+
+[web.resource.dev]
+
+# Javascript code file
+# serve: [dev-server] only
+script = []

@@ -1,0 +1,67 @@
+/* Swiss / International Typographic Style 基底 */
+:root {
+    --accent: #e3000f;
+    --ink: #111111;
+    --paper: #ffffff;
+}
+
+html,
+body {
+    height: 100%;
+    /* 文档本身永不滚动/回弹,滚动交给内部容器,避免硬拖出现空白 */
+    overflow: hidden;
+    overscroll-behavior: none;
+}
+
+body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: "Helvetica Neue", Helvetica, Arial, "Segoe UI", sans-serif;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+}
+
+/* 全局禁止文字选中(桌面应用观感);输入框除外,否则没法编辑/选取 */
+* {
+    -webkit-user-select: none;
+    user-select: none;
+    cursor: default;
+}
+
+input,
+textarea {
+    -webkit-user-select: text;
+    user-select: text;
+    cursor: auto;
+}
+
+/* 可点击元素仍显示手型光标 */
+button,
+a {
+    cursor: pointer;
+}
+
+button:disabled {
+    cursor: default;
+}
+
+/* 表单元素继承字体,去除系统默认外观 */
+input,
+button {
+    font-family: inherit;
+}
+
+/* 细滚动条,贴合极简风格 */
+::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+    background: #111111;
+}
+
+::-webkit-scrollbar-track {
+    background: #ffffff;
+}

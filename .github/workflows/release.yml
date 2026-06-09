@@ -1,0 +1,101 @@
+name: Build & Release
+
+# 推送 v* 标签时构建并发布;也可在 Actions 页手动触发(只构建,不发版)。
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write # 创建 Release / 上传产物需要
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macos-arm64
+            os: macos-14 # Apple Silicon,原生 arm64
+            platform: macos
+            target: aarch64-apple-darwin
+            package-types: macos
+          - name: windows-x64
+            os: windows-latest # x86_64
+            platform: windows
+            target: x86_64-pc-windows-msvc
+            package-types: nsis
+          - name: windows-arm64
+            os: windows-11-arm # 原生 arm64 runner(公开仓库免费)
+            platform: windows
+            target: aarch64-pc-windows-msvc
+            package-types: nsis
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.name }}
+
+      - name: Install cargo-binstall
+        uses: cargo-bins/cargo-binstall@main
+
+      # 用 binstall 拉预编译的 dx,避免从源码编译 dioxus-cli(慢)。
+      # 版本与 Cargo.toml 里的 dioxus 0.7.1 对齐。
+      - name: Install Dioxus CLI
+        run: cargo binstall dioxus-cli@0.7.1 -y --force
+
+      - name: Bundle
+        # 原生 runner 上 dx 默认按宿主架构构建,无需交叉编译。
+        run: dx bundle --release --platform ${{ matrix.platform }} --package-types ${{ matrix.package-types }}
+
+      # ---- 收集产物 ----
+      - name: Collect artifacts (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          mkdir -p artifacts
+          # .app 是目录,打成 tar.gz 便于上传/下载
+          app=$(find target -type d -name '*.app' -path '*bundle*' | head -n1)
+          if [ -n "$app" ]; then
+            tar -C "$(dirname "$app")" -czf "artifacts/ProxyZms-${{ matrix.name }}.app.tar.gz" "$(basename "$app")"
+          fi
+          # 若同时产出了 dmg 也一并带上
+          find target -type f -name '*.dmg' -path '*bundle*' -exec cp {} "artifacts/ProxyZms-${{ matrix.name }}.dmg" \;
+          ls -la artifacts
+
+      - name: Collect artifacts (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force artifacts | Out-Null
+          # NSIS 安装器 .exe
+          Get-ChildItem -Recurse target -Filter *.exe |
+            Where-Object { $_.FullName -match 'bundle' } |
+            ForEach-Object { Copy-Item $_.FullName "artifacts/ProxyZms-${{ matrix.name }}-setup.exe" }
+          Get-ChildItem artifacts
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: artifacts/*
+          if-no-files-found: error
+
+      # ---- 仅标签触发时发布到 Release(各 job 追加自己的产物到同一 tag)----
+      - name: Publish to Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          fail_on_unmatched_files: true
