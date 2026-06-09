@@ -53,7 +53,12 @@ jobs:
       # 用 binstall 拉预编译的 dx,避免从源码编译 dioxus-cli(慢)。
       # 版本与 Cargo.toml 里的 dioxus 0.7.1 对齐。
       - name: Install Dioxus CLI
-        run: cargo binstall dioxus-cli@0.7.1 -y --force
+        # GITHUB_TOKEN:让 binstall 带认证访问 GitHub,避免匿名限流导致探测超时;
+        # --disable-strategies compile:禁止回退到源码编译(dioxus-cli 0.7.1 的 rhai 依赖会编译失败),
+        # 找不到预编译包时快速失败,而不是浪费十分钟编译再挂。
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: cargo binstall dioxus-cli@0.7.1 -y --force --disable-strategies compile
 
       - name: Bundle
         # 原生 runner 上 dx 默认按宿主架构构建,无需交叉编译。
