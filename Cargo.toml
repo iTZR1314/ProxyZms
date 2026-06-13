@@ -3,6 +3,8 @@ name = "proxy-zms"
 version = "0.1.1"
 authors = ["ZHOUMAOSEN"]
 edition = "2021"
+license = "GPL-3.0-only"
+repository = "https://github.com/iTZR1314/ProxyZms"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
