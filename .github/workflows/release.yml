@@ -22,7 +22,8 @@ jobs:
             os: macos-14 # Apple Silicon,原生 arm64
             platform: macos
             target: aarch64-apple-darwin
-            package-types: dmg
+            # 只让 dx 产出 .app;dmg 由收集步骤 ad-hoc 签名后自己打包
+            package-types: macos
           - name: windows-x64
             os: windows-latest # x86_64
             platform: windows
@@ -69,11 +70,26 @@ jobs:
         if: runner.os == 'macOS'
         shell: bash
         run: |
+          set -euo pipefail
           mkdir -p artifacts
-          # dx bundle --package-types dmg 产出:target/dx/proxy-zms/bundle/macos/macos/*.dmg
-          dmg=$(find target -type f -name '*.dmg' -path '*bundle*' | head -n1)
-          if [ -z "$dmg" ]; then echo "::error::未找到 dmg 产物"; exit 1; fi
-          cp "$dmg" "artifacts/ProxyZms-${{ matrix.name }}.dmg"
+
+          # dx bundle --package-types macos 产出 .app(bundle 目录下)
+          app=$(find target -type d -name '*.app' -path '*bundle*' | head -n1)
+          if [ -z "$app" ]; then echo "::error::未找到 .app 产物"; exit 1; fi
+          echo "found app: $app"
+
+          # ad-hoc(-)深度签名:Apple Silicon 上没有任何签名会「已损坏打不开」。
+          # 这不是 Apple 公证,Gatekeeper 仍会提示——用户首次打开需右键打开或解除隔离(见 README)。
+          codesign --force --deep --sign - "$app"
+          codesign --verify --deep --strict --verbose=2 "$app"
+
+          # 自己用 hdiutil 打 dmg,放一个 Applications 软链做「拖入安装」。
+          staging=$(mktemp -d)
+          cp -R "$app" "$staging/"
+          ln -s /Applications "$staging/Applications"
+          hdiutil create -volname ProxyZms -srcfolder "$staging" -ov -format UDZO \
+            "$PWD/artifacts/ProxyZms-${{ matrix.name }}.dmg"
+          rm -rf "$staging"
           ls -la artifacts
 
       - name: Collect artifacts (Windows)
