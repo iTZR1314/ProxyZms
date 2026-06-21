@@ -52,6 +52,23 @@ button {
     font-family: inherit;
 }
 
+/* ---- 实时流量条形图 ---- */
+.flow-chart {
+    display: flex;
+    align-items: flex-end;
+    gap: 2px;
+    height: 76px;
+}
+.flow-chart > .flow-bar {
+    flex: 1;
+    min-height: 2px;
+    background: #161616;
+    transition: height 0.55s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.flow-chart > .flow-bar-last {
+    background: #e60019;
+}
+
 /* 细滚动条,贴合极简风格 */
 ::-webkit-scrollbar {
     width: 10px;

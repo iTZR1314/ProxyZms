@@ -17,7 +17,7 @@ mod views;
 
 use config::AppConfig;
 use mihomo::Controller;
-use views::{ConnectionsView, Dashboard, Settings};
+use views::{ConnectionsView, Flow, Settings};
 
 /// 全局共享的 TUN 开关状态:UI(TunControls)与系统托盘共用同一信号,保证一致。
 #[derive(Clone, Copy)]
@@ -28,7 +28,7 @@ pub struct TunState(pub Signal<bool>);
 enum Route {
     #[layout(Shell)]
     #[route("/")]
-    Home {},
+    FlowPage {},
     #[route("/connections")]
     Connections {},
     #[route("/settings")]
@@ -424,7 +424,8 @@ fn App() -> Element {
 fn Shell() -> Element {
     rsx! {
         div { class: "flex h-screen bg-white text-neutral-900 overflow-hidden",
-            aside { class: "w-52 shrink-0 border-r-2 border-black flex flex-col",
+            // 导航栏:实心白底,右侧发丝分隔线。
+            aside { class: "w-52 shrink-0 border-r border-black/15 bg-white flex flex-col",
                 // 品牌区
                 div { class: "px-6 py-8 border-b-2 border-black",
                     div { class: "text-2xl font-bold tracking-tighter leading-none", "Mihomo" }
@@ -434,7 +435,7 @@ fn Shell() -> Element {
                 }
                 // 编号导航
                 nav { class: "flex-1 py-2",
-                    NavItem { to: Route::Home {}, index: "01", label: "状态" }
+                    NavItem { to: Route::FlowPage {}, index: "01", label: "流量" }
                     NavItem { to: Route::Connections {}, index: "02", label: "连接" }
                     NavItem { to: Route::SettingsPage {}, index: "03", label: "设置" }
                 }
@@ -448,7 +449,7 @@ fn Shell() -> Element {
                         img { src: fmr_logo_uri(), class: "w-16 h-16", alt: "付满瑞印" }
                         div { class: "text-center leading-tight",
                             div { class: "text-xs uppercase tracking-[0.2em] text-neutral-600", "fumanrui" }
-                            div { class: "text-[10px] uppercase tracking-[0.2em] text-neutral-400", "2026 v0.0.2" }
+                            div { class: "text-[10px] uppercase tracking-[0.2em] text-neutral-400", "2026 v0.0.3" }
                         }
                     }
                 }
@@ -475,8 +476,8 @@ fn NavItem(to: Route, index: String, label: String) -> Element {
 }
 
 #[component]
-fn Home() -> Element {
-    rsx! { Dashboard {} }
+fn FlowPage() -> Element {
+    rsx! { Flow {} }
 }
 
 #[component]

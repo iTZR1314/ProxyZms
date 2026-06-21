@@ -47,7 +47,7 @@ pub fn ProxyGroups() -> Element {
         .collect();
 
     rsx! {
-        section { class: "mt-12",
+        section {
             div { class: "text-[11px] uppercase tracking-[0.2em] text-[#e3000f] border-b-2 border-black pb-2 mb-6",
                 "代理节点 / Proxies"
             }
@@ -105,14 +105,14 @@ pub fn ProxyGroups() -> Element {
                         rsx! {
                             div { key: "{group.name}", class: "border border-black",
                                 // 组标题:名称 + 类型 + 当前选择 + 测速
-                                div { class: "flex items-center justify-between px-4 py-3 border-b border-neutral-200",
-                                    div { class: "flex items-baseline gap-3",
-                                        span { class: "font-bold tracking-tight", "{group.name}" }
-                                        span { class: "text-xs uppercase tracking-[0.12em] text-neutral-400", "{group.proxy_type}" }
-                                        span { class: "text-sm text-[#e3000f]", "→ {group.now}" }
+                                div { class: "flex items-center justify-between gap-3 px-4 py-3 border-b border-neutral-200",
+                                    div { class: "flex items-baseline gap-3 min-w-0",
+                                        span { class: "shrink-0 font-bold tracking-tight", "{group.name}" }
+                                        span { class: "shrink-0 text-xs uppercase tracking-[0.12em] text-neutral-400", "{group.proxy_type}" }
+                                        span { class: "truncate text-sm text-[#e3000f]", "→ {group.now}" }
                                     }
                                     button {
-                                        class: "inline-flex items-center justify-center min-w-[3.25rem] px-3 py-1 text-[11px] uppercase tracking-[0.12em] border border-black hover:bg-black hover:text-white disabled:hover:bg-transparent disabled:hover:text-black transition-colors",
+                                        class: "shrink-0 inline-flex items-center justify-center min-w-[3.25rem] px-3 py-1 text-[11px] uppercase tracking-[0.12em] border border-black hover:bg-black hover:text-white disabled:hover:bg-transparent disabled:hover:text-black transition-colors",
                                         disabled: is_testing,
                                         onclick: move |_| {
                                             let g = gname_test.clone();
@@ -148,10 +148,11 @@ pub fn ProxyGroups() -> Element {
                                             rsx! {
                                                 button {
                                                     key: "{member}",
+                                                    title: "{member}",
                                                     class: if active {
-                                                        "px-3 py-1.5 text-sm bg-black text-white border border-black flex items-center gap-2"
+                                                        "max-w-full px-3 py-1.5 text-sm bg-black text-white border border-black flex items-center gap-2"
                                                     } else {
-                                                        "px-3 py-1.5 text-sm border border-neutral-300 text-neutral-700 hover:border-black transition-colors flex items-center gap-2"
+                                                        "max-w-full px-3 py-1.5 text-sm border border-neutral-300 text-neutral-700 hover:border-black transition-colors flex items-center gap-2"
                                                     },
                                                     onclick: move |_| {
                                                         let g = g.clone();
@@ -166,11 +167,21 @@ pub fn ProxyGroups() -> Element {
                                                             r.set(r() + 1);
                                                         });
                                                     },
-                                                    span { "{member}" }
+                                                    // 选中节点:红点标识
+                                                    if active {
+                                                        span { class: "w-1.5 h-1.5 shrink-0 bg-[#e3000f]" }
+                                                    }
+                                                    // 节点名:超长截断,避免撑宽芯片
+                                                    span { class: "truncate max-w-[200px]", "{member}" }
+                                                    // 延迟徽章:固定宽度右对齐,数字变化不让芯片重排
                                                     if let Some(d) = delay {
                                                         span {
-                                                            class: if active { "text-[11px] tabular-nums text-neutral-300" } else { "text-[11px] tabular-nums text-neutral-400" },
-                                                            "{d}ms"
+                                                            class: if active {
+                                                                "shrink-0 min-w-[3.25rem] text-right text-[11px] tabular-nums text-neutral-300"
+                                                            } else {
+                                                                "shrink-0 min-w-[3.25rem] text-right text-[11px] tabular-nums text-neutral-400"
+                                                            },
+                                                            "{d} ms"
                                                         }
                                                     }
                                                 }
