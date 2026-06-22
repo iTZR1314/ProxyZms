@@ -449,7 +449,7 @@ fn Shell() -> Element {
                         img { src: fmr_logo_uri(), class: "w-16 h-16", alt: "付满瑞印" }
                         div { class: "text-center leading-tight",
                             div { class: "text-xs uppercase tracking-[0.2em] text-neutral-600", "fumanrui" }
-                            div { class: "text-[10px] uppercase tracking-[0.2em] text-neutral-400", "2026 v0.0.3" }
+                            div { class: "text-[10px] uppercase tracking-[0.2em] text-neutral-400", "2026 v0.0.4" }
                         }
                     }
                 }
