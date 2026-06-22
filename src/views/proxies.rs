@@ -4,6 +4,7 @@ use crate::mihomo::types::Proxy;
 use crate::mihomo::{ApiClient, Controller};
 use dioxus::prelude::*;
 use std::collections::{BTreeMap, HashSet};
+use std::time::Duration;
 
 /// 代理节点选择:列出所有 Selector 策略组,点选切换 / 按组测速。
 #[component]
@@ -12,6 +13,16 @@ pub fn ProxyGroups() -> Element {
     let refresh = use_signal(|| 0u32);
     // 正在测速的策略组名(用于显示转圈、禁用按钮)
     let testing = use_signal(HashSet::<String>::new);
+
+    // 轮询:每 2s 重新拉取 /proxies。首次挂载时内核可能尚未就绪(此时返回空),
+    // 靠这个循环在内核起来后自动重抓,页面自愈——否则会一直停在"暂无可选策略组"。
+    use_future(move || async move {
+        let mut r = refresh;
+        loop {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            r.set(r() + 1);
+        }
+    });
 
     let proxies = use_resource(move || async move {
         let _ = refresh(); // 依赖:变化即重新拉取
