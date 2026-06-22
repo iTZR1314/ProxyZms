@@ -1,265 +1,95 @@
-You are an expert [0.7 Dioxus](https://dioxuslabs.com/learn/0.7) assistant. Dioxus 0.7 changes every api in dioxus. Only use this up to date documentation. `cx`, `Scope`, and `use_state` are gone
+# Repository Guidelines
 
-Provide concise code examples with detailed descriptions
+## Project Overview
 
-# Dioxus Dependency
+ProxyZms (`proxy-zms`, v0.0.4, GPL-3.0) is a **Dioxus 0.7 desktop GUI** (Rust + RSX + Tailwind, rendered in a system WebView, shipped as a single-file executable) that downloads, launches, and controls a bundled [mihomo](https://github.com/MetaCubeX/mihomo) proxy kernel over its External Controller REST API. The UI and most code comments are **Chinese** — match that style when editing. Default platform is `desktop`; Windows binaries are cross-built from macOS.
 
-You can add Dioxus to your `Cargo.toml` like this:
+## Architecture & Data Flow
 
-```toml
-[dependencies]
-dioxus = { version = "0.7.1" }
+The app treats itself as the **sole owner** of one mihomo process and the **sole authority** over its control channel. Two invariants dominate the design:
 
-[features]
-default = ["web", "webview", "server"]
-web = ["dioxus/web"]
-webview = ["dioxus/desktop"]
-server = ["dioxus/server"]
+- **Process-ownership** (`src/mihomo/process.rs`): *if the app isn't running, the kernel isn't either.* Enforced in 4 layers — normal close/panic → `Inner::Drop`; Ctrl-C/SIGTERM → handler calls `process::kill_tracked()` + `exit` (Drop won't run on `process::exit`); crash/SIGKILL → next `Controller::start()` runs `cleanup_previous()`, killing the PID in `mihomo.pid` (+ `pkill -f <work_dir>` on Unix).
+- **Local-control seizure** (`src/bootstrap.rs`): every start **strips** any `external-controller*`/`secret*` top-level keys from the subscription YAML (`strip_seized_keys` / `SEIZED_PREFIXES`) and **re-injects** the local controller URL + secret (`enforce_local_control` / `reassert_control`), so a subscription can't hijack the channel.
+
+State is shared through **Dioxus context** (no signal prop-drilling), provided once in `App` (`src/main.rs`):
+
+- `Signal<AppConfig>` — persisted config (`use_context_provider(|| Signal::new(AppConfig::load()))`).
+- `Controller` — `Clone` (`Arc<Inner>`) + `Send` kernel handle (`use_context_provider(Controller::default)`).
+- `TunState(Signal<bool>)` — shared TUN on/off, read by **both** UI and tray. Its **only writer** is the 2s `/configs` polling loop in `App`; toggles never optimistically update — they set the signal only after the API call succeeds.
+
+Data flow: `App` provides context + tray + polling → `Router::<Route>` renders `Shell` (sidebar + `Outlet`) → views read context, call `ApiClient`/`Controller`, and run their own `use_future` polling loops (throughput, IPv6 probe). Routes (`#[layout(Shell)]`): `/`→`FlowPage`, `/connections`→`Connections`, `/settings`→`SettingsPage`; these are thin wrappers rendering `Flow` / `ConnectionsView` / `Settings`.
+
+## Key Directories
+
+- `src/` — all Rust source.
+  - `src/main.rs` — entry point, `App` root, `Route` enum, `Shell` layout, system tray, single-instance lock, 2s polling loop, macOS dock/icon shims, compile-time CSS/icon embedding.
+  - `src/bootstrap.rs` — managed data dir (`<config_dir>/proxy-zms/mihomo`), per-platform binary download/extract, subscription fetch, control seizure.
+  - `src/config.rs` — `AppConfig` (JSON-persisted).
+  - `src/format.rs` — byte/speed humanizers.
+  - `src/mihomo/` — `api.rs` (`ApiClient` REST client), `process.rs` (`Controller`, elevation), `types.rs` (Deserialize models).
+  - `src/views/` — `flow.rs` (Home/状态 — **the real dashboard**), `proxies.rs` (`ProxyGroups`, `TunControls`), `connections.rs`, `settings.rs`; private modules with flat `pub use` re-exports in `mod.rs`.
+- `assets/` — `main.css` (hand-written global CSS), `tailwind.css` (compiled output), icons/logos (most embedded at compile time).
+- `.github/workflows/` — `ci.yml`, `release.yml`.
+
+> ⚠️ `CLAUDE.md`/`README.md` mention `views/dashboard.rs`; it no longer exists — that behavior was merged into `views/flow.rs`. Treat such references as stale.
+
+## Development Commands
+
+```bash
+cargo install dioxus-cli                                   # provides `dx` (pin to 0.7.1)
+dx serve                                                   # dev (default platform=desktop; keeps console logs)
+dx serve --platform desktop                               # explicit
+cargo build                                                # compile check (cargo build --release in CI)
+cargo clippy --all-targets -- -D warnings                 # lint — exactly what CI gates on; must be clean
+dx bundle --release --platform macos --package-types dmg  # package macOS .dmg
 ```
 
-# Launching your application
+**Windows is never built locally** — it's cross-built on a remote Windows host:
 
-You need to create a main function that sets up the Dioxus runtime and mounts your root component.
-
-```rust
-use dioxus::prelude::*;
-
-fn main() {
-	dioxus::launch(App);
-}
-
-#[component]
-fn App() -> Element {
-	rsx! { "Hello, Dioxus!" }
-}
+```bash
+./upload-to-windows.sh           # rsync-ish tar+scp upload of source (excludes target/, .git/)
+./upload-to-windows.sh bundle    # upload AND run build-windows.ps1 remotely → NSIS .exe in dist/bundle/
 ```
 
-Then serve with `dx serve`:
+`build-windows.ps1` runs `dx bundle --release --platform windows --package-types nsis` (it first rebuilds `$env:Path` from the registry because non-interactive SSH sessions get a trimmed PATH).
 
-```sh
-curl -sSL http://dioxus.dev/install.sh | sh
-dx serve
-```
+> Host/credentials are **hard-coded** near the top of `upload-to-windows.sh` (a committed plaintext SSH password). Do not break, duplicate, or leak these values.
 
-# UI with RSX
+## Code Conventions & Common Patterns
 
-```rust
-rsx! {
-	div {
-		class: "container", // Attribute
-		color: "red", // Inline styles
-		width: if condition { "100%" }, // Conditional attributes
-		"Hello, Dioxus!"
-	}
-	// Prefer loops over iterators
-	for i in 0..5 {
-		div { "{i}" } // use elements or components directly in loops
-	}
-	if condition {
-		div { "Condition is true!" } // use elements or components directly in conditionals
-	}
+- **Error handling**: plain `Result<_, String>` (Chinese messages), `reqwest::Result`, `std::io::Result`. **No** `anyhow`, `thiserror`, or `ServerFnError`. `AppConfig::load()` never panics (falls back to `Default`).
+- **Async**: `tokio` is enabled with only `["time", "rt"]` (no macros/full); use Dioxus `spawn` / `use_future` for tasks, `futures_util::StreamExt` for streamed downloads. Start/stop are synchronous and never hold a lock across `await`.
+- **Signals-across-await (enforced by `clippy.toml`)**: never hold a `GenerationalRef`/`GenerationalRefMut`/`WriteLock` across `.await`. Clone owned values out of `config.read()` into locals **before** awaiting:
+  ```rust
+  let (url, secret) = { let c = config.read(); (c.controller_url.clone(), c.secret.clone()) };
+  let cfg = ApiClient::new(&url, &secret).configs().await; // borrow already dropped
+  ```
+- **State management**: `use_signal` (local), `use_resource` (async fetch), `use_future` (dominant: `loop { …; tokio::time::sleep(…).await }` polling), `use_effect` (react to signals), `use_context::<T>()` (shared state). **Not used anywhere**: `use_memo`, `ReadOnlySignal`, `Signal<T>` as a prop.
+- **Components (Dioxus 0.7)**: `#[component]` fns, capitalized names. Top-level views take **no props**; helper components take **owned** values (`String`/`bool`/`Element`) plus `EventHandler<T>` callbacks (e.g. `Field(label, value, placeholder, oninput: EventHandler<String>)`), never signals. Remember 0.7: `cx`/`Scope`/`use_state` are gone.
+- **RSX/styling**: Tailwind utility strings inline in `rsx!`; brand red is `#e3000f` (`--accent` in `main.css`). Prefer `for`/`if` directly in `rsx!`.
+- **serde**: API models are `Deserialize`-only; `AppConfig` is `Serialize + Deserialize + PartialEq` with `#[serde(default)]` on newer fields.
+- **Assets are compile-time embedded** — do **not** rely on runtime asset paths. `main.rs` inlines `main.css` + `tailwind.css` into the WebView `<head>` via `with_custom_head` (`include_str!`), embeds tray/window icons with `include_bytes!`, and base64-encodes the sidebar logo into a `data:` URI. Add global styles to `assets/main.css` (or the Tailwind input) so they get inlined.
 
-	{children} // Expressions are wrapped in brace
-	{(0..5).map(|i| rsx! { span { "Item {i}" } })} // Iterators must be wrapped in braces
-}
-```
+## Important Files
 
-# Assets
+- `src/main.rs` — entry, `App`, `Route`/`Shell`, tray, single-instance (loopback `127.0.0.1:53682`, release-only), polling loop, asset embedding.
+- `src/bootstrap.rs` — bootstrap state + control seizure.
+- `src/mihomo/process.rs` — `Controller`, kill paths, `is_elevated`/`elevate_binary` (macOS setuid via AppleScript prompt; Windows no-op, elevated by manifest).
+- `src/mihomo/api.rs` — `ApiClient` (`/version`, `/configs`, `/connections`, `/proxies`, `set_mode`, `set_tun`, `select_proxy`, `group_delay`).
+- `src/views/flow.rs` — home/status page; holds the `NORMAL_MODE` const (see Testing).
+- `Cargo.toml`, `Dioxus.toml` (bundle id `top.zhoumaosen`, icons), `clippy.toml` (await-holding rules), `build.rs` + `proxyzms.rc`/`proxyzms.manifest` (Windows `requireAdministrator`).
+- `.github/workflows/ci.yml` (clippy + build on macos-14 & windows-latest), `release.yml` (tag `v*` → 3-target dmg/NSIS build + GitHub Release).
 
-The asset macro can be used to link to local files to use in your project. All links start with `/` and are relative to the root of your project.
+## Runtime/Tooling Preferences
 
-```rust
-rsx! {
-	img {
-		src: asset!("/assets/image.png"),
-		alt: "An image",
-	}
-}
-```
+- **Toolchain**: Rust (edition 2021) + the **Dioxus CLI `dx`** (pin `0.7.1`); `cargo` is the only package manager. CI installs `dx` via `cargo binstall dioxus-cli@0.7.1` (no source compile).
+- **Default feature** is `desktop` (`dioxus/desktop`); `web`/`mobile` features exist but the app is desktop-only (`Dioxus.toml` `[web.*]` is empty scaffold, no `index.html`).
+- **Tailwind v4 is automatic**: the 23-byte root `tailwind.css` (`@import "tailwindcss";`) is the input; `dx` compiles it to `assets/tailwind.css` (committed). No watcher, `package.json`, or `tailwind.config.js`.
+- **Platform specifics**: macOS-only `objc` dep (dock/icon, setuid prompt); Windows-only `embed-resource` build-dep (UAC manifest). `Cargo.lock` is committed.
 
-## Styles
+## Testing & QA
 
-The `document::Stylesheet` component will inject the stylesheet into the `<head>` of the document
-
-```rust
-rsx! {
-	document::Stylesheet {
-		href: asset!("/assets/styles.css"),
-	}
-}
-```
-
-# Components
-
-Components are the building blocks of apps
-
-* Component are functions annotated with the `#[component]` macro.
-* The function name must start with a capital letter or contain an underscore.
-* A component re-renders only under two conditions:
-	1.  Its props change (as determined by `PartialEq`).
-	2.  An internal reactive state it depends on is updated.
-
-```rust
-#[component]
-fn Input(mut value: Signal<String>) -> Element {
-	rsx! {
-		input {
-            value,
-			oninput: move |e| {
-				*value.write() = e.value();
-			},
-			onkeydown: move |e| {
-				if e.key() == Key::Enter {
-					value.write().clear();
-				}
-			},
-		}
-	}
-}
-```
-
-Each component accepts function arguments (props)
-
-* Props must be owned values, not references. Use `String` and `Vec<T>` instead of `&str` or `&[T]`.
-* Props must implement `PartialEq` and `Clone`.
-* To make props reactive and copy, you can wrap the type in `ReadOnlySignal`. Any reactive state like memos and resources that read `ReadOnlySignal` props will automatically re-run when the prop changes.
-
-# State
-
-A signal is a wrapper around a value that automatically tracks where it's read and written. Changing a signal's value causes code that relies on the signal to rerun.
-
-## Local State
-
-The `use_signal` hook creates state that is local to a single component. You can call the signal like a function (e.g. `my_signal()`) to clone the value, or use `.read()` to get a reference. `.write()` gets a mutable reference to the value.
-
-Use `use_memo` to create a memoized value that recalculates when its dependencies change. Memos are useful for expensive calculations that you don't want to repeat unnecessarily.
-
-```rust
-#[component]
-fn Counter() -> Element {
-	let mut count = use_signal(|| 0);
-	let mut doubled = use_memo(move || count() * 2); // doubled will re-run when count changes because it reads the signal
-
-	rsx! {
-		h1 { "Count: {count}" } // Counter will re-render when count changes because it reads the signal
-		h2 { "Doubled: {doubled}" }
-		button {
-			onclick: move |_| *count.write() += 1, // Writing to the signal rerenders Counter
-			"Increment"
-		}
-		button {
-			onclick: move |_| count.with_mut(|count| *count += 1), // use with_mut to mutate the signal
-			"Increment with with_mut"
-		}
-	}
-}
-```
-
-## Context API
-
-The Context API allows you to share state down the component tree. A parent provides the state using `use_context_provider`, and any child can access it with `use_context`
-
-```rust
-#[component]
-fn App() -> Element {
-	let mut theme = use_signal(|| "light".to_string());
-	use_context_provider(|| theme); // Provide a type to children
-	rsx! { Child {} }
-}
-
-#[component]
-fn Child() -> Element {
-	let theme = use_context::<Signal<String>>(); // Consume the same type
-	rsx! {
-		div {
-			"Current theme: {theme}"
-		}
-	}
-}
-```
-
-# Async
-
-For state that depends on an asynchronous operation (like a network request), Dioxus provides a hook called `use_resource`. This hook manages the lifecycle of the async task and provides the result to your component.
-
-* The `use_resource` hook takes an `async` closure. It re-runs this closure whenever any signals it depends on (reads) are updated
-* The `Resource` object returned can be in several states when read:
-1. `None` if the resource is still loading
-2. `Some(value)` if the resource has successfully loaded
-
-```rust
-let mut dog = use_resource(move || async move {
-	// api request
-});
-
-match dog() {
-	Some(dog_info) => rsx! { Dog { dog_info } },
-	None => rsx! { "Loading..." },
-}
-```
-
-# Routing
-
-All possible routes are defined in a single Rust `enum` that derives `Routable`. Each variant represents a route and is annotated with `#[route("/path")]`. Dynamic Segments can capture parts of the URL path as parameters by using `:name` in the route string. These become fields in the enum variant.
-
-The `Router<Route> {}` component is the entry point that manages rendering the correct component for the current URL.
-
-You can use the `#[layout(NavBar)]` to create a layout shared between pages and place an `Outlet<Route> {}` inside your layout component. The child routes will be rendered in the outlet.
-
-```rust
-#[derive(Routable, Clone, PartialEq)]
-enum Route {
-	#[layout(NavBar)] // This will use NavBar as the layout for all routes
-		#[route("/")]
-		Home {},
-		#[route("/blog/:id")] // Dynamic segment
-		BlogPost { id: i32 },
-}
-
-#[component]
-fn NavBar() -> Element {
-	rsx! {
-		a { href: "/", "Home" }
-		Outlet<Route> {} // Renders Home or BlogPost
-	}
-}
-
-#[component]
-fn App() -> Element {
-	rsx! { Router::<Route> {} }
-}
-```
-
-```toml
-dioxus = { version = "0.7.1", features = ["router"] }
-```
-
-# Fullstack
-
-Fullstack enables server rendering and ipc calls. It uses Cargo features (`server` and a client feature like `web`) to split the code into a server and client binaries.
-
-```toml
-dioxus = { version = "0.7.1", features = ["fullstack"] }
-```
-
-## Server Functions
-
-Use the `#[post]` / `#[get]` macros to define an `async` function that will only run on the server. On the server, this macro generates an API endpoint. On the client, it generates a function that makes an HTTP request to that endpoint.
-
-```rust
-#[post("/api/double/:path/&query")]
-async fn double_server(number: i32, path: String, query: i32) -> Result<i32, ServerFnError> {
-	tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-	Ok(number * 2)
-}
-```
-
-## Hydration
-
-Hydration is the process of making a server-rendered HTML page interactive on the client. The server sends the initial HTML, and then the client-side runs, attaches event listeners, and takes control of future rendering.
-
-### Errors
-The initial UI rendered by the component on the client must be identical to the UI rendered on the server.
-
-* Use the `use_server_future` hook instead of `use_resource`. It runs the future on the server, serializes the result, and sends it to the client, ensuring the client has the data immediately for its first render.
-* Any code that relies on browser-specific APIs (like accessing `localStorage`) must be run *after* hydration. Place this code inside a `use_effect` hook.
+- **There are no tests** anywhere in the repo (verified: no `#[test]`, `#[cfg(test)]`, `mod tests`, `tests/`, doctests; CI runs no `cargo test`).
+- **Verify changes** with: `cargo clippy --all-targets -- -D warnings` (warnings are hard errors in CI — keep it clean), `cargo build`, then a manual runtime check via `dx serve`.
+- For **UI-only iteration** without spawning the real kernel, set `const NORMAL_MODE: bool = false` in `src/views/flow.rs` (revert before committing).
+- When adding behavior worth testing, prefer real runnable tests over mocks; never suppress clippy/build failures to make code pass.
