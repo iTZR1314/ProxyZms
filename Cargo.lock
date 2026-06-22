@@ -3980,7 +3980,7 @@ dependencies = [
 
 [[package]]
 name = "proxy-zms"
-version = "0.0.4"
+version = "0.0.5"
 dependencies = [
  "base64",
  "ctrlc",
