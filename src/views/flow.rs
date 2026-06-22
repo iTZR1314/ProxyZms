@@ -6,8 +6,8 @@
 use crate::bootstrap;
 use crate::config::AppConfig;
 use crate::format;
-use crate::mihomo::types::Connections;
-use crate::mihomo::{ApiClient, Controller};
+use crate::mihomo::Controller;
+use crate::Telemetry;
 use crate::views::{ProxyGroups, TunControls};
 use dioxus::prelude::*;
 use std::time::Duration;
@@ -54,12 +54,13 @@ enum Setup {
 pub fn Flow() -> Element {
     let mut config = use_context::<Signal<AppConfig>>();
     let controller = use_context::<Controller>();
+    let tele = use_context::<Telemetry>();
+    let online = tele.online;
+    let connections = tele.connections;
 
     let mut setup = use_signal(|| Setup::Checking);
     let mut started = use_signal(|| false);
 
-    let mut online = use_signal(|| false);
-    let mut stats = use_signal(|| None::<Connections>);
     let mut down_speed = use_signal(|| 0u64);
     let mut up_speed = use_signal(|| 0u64);
     let mut error = use_signal(|| None::<String>);
@@ -144,43 +145,29 @@ pub fn Flow() -> Element {
         }
     });
 
-    // 每秒轮询控制器:版本(在线判断)+ 连接(流量/内存/速率)
-    use_future(move || async move {
-        let mut prev: Option<(u64, u64)> = None;
-        let mut last_cfg: Option<AppConfig> = None;
-        let mut client: Option<ApiClient> = None;
-        loop {
-            let cfg = config();
-            if last_cfg.as_ref() != Some(&cfg) {
-                client = Some(ApiClient::new(cfg.controller_url.clone(), cfg.secret.clone()));
-                last_cfg = Some(cfg);
-                prev = None;
-            }
-            let api = client.as_ref().unwrap();
-
-            online.set(api.version().await.is_ok());
-            match api.connections().await {
-                Ok(conn) => {
-                    if let Some((pd, pu)) = prev {
-                        down_speed.set(conn.download_total.saturating_sub(pd));
-                        up_speed.set(conn.upload_total.saturating_sub(pu));
-                    }
-                    prev = Some((conn.download_total, conn.upload_total));
-                    stats.set(Some(conn));
-                }
-                Err(_) => {
-                    down_speed.set(0);
-                    up_speed.set(0);
-                }
-            }
-            // 滚动条形图:推入本秒总速率,丢弃最旧一格(在 await 前完成借用)
-            {
-                let total = down_speed() + up_speed();
+    // 流量速率 + 滚动曲线:由集中轮询的 connections 变化驱动(每秒一次)。
+    let mut prev = use_signal(|| None::<(u64, u64)>);
+    use_effect(move || {
+        match connections.read().as_ref() {
+            Some(c) => {
+                let prev_v: Option<(u64, u64)> = *prev.peek();
+                let (pd, pu) = prev_v.unwrap_or((c.download_total, c.upload_total));
+                let d = c.download_total.saturating_sub(pd);
+                let u = c.upload_total.saturating_sub(pu);
+                down_speed.set(d);
+                up_speed.set(u);
+                prev.set(Some((c.download_total, c.upload_total)));
                 let mut h = history.write();
                 h.remove(0);
-                h.push(total);
+                h.push(d + u);
             }
-            tokio::time::sleep(Duration::from_secs(1)).await;
+            None => {
+                down_speed.set(0);
+                up_speed.set(0);
+                let mut h = history.write();
+                h.remove(0);
+                h.push(0);
+            }
         }
     });
 
@@ -245,7 +232,7 @@ pub fn Flow() -> Element {
         Setup::Ready => {}
     }
 
-    let snap = stats();
+    let snap = connections();
     let conn_count = snap.as_ref().map(|s| s.connections.len()).unwrap_or(0);
     let memory = snap.as_ref().map(|s| s.memory).unwrap_or(0);
     let dl_total = snap.as_ref().map(|s| s.download_total).unwrap_or(0);

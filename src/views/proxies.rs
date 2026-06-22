@@ -2,53 +2,28 @@ use crate::config::AppConfig;
 use crate::mihomo::process;
 use crate::mihomo::types::Proxy;
 use crate::mihomo::{ApiClient, Controller};
+use crate::Telemetry;
 use dioxus::prelude::*;
 use std::collections::{BTreeMap, HashSet};
-use std::time::Duration;
 
 /// 代理节点选择:列出所有 Selector 策略组,点选切换 / 按组测速。
 #[component]
 pub fn ProxyGroups() -> Element {
     let config = use_context::<Signal<AppConfig>>();
-    let refresh = use_signal(|| 0u32);
+    let tele = use_context::<Telemetry>();
     // 正在测速的策略组名(用于显示转圈、禁用按钮)
     let testing = use_signal(HashSet::<String>::new);
 
-    // 轮询:每 2s 重新拉取 /proxies。首次挂载时内核可能尚未就绪(此时返回空),
-    // 靠这个循环在内核起来后自动重抓,页面自愈——否则会一直停在"暂无可选策略组"。
-    use_future(move || async move {
-        let mut r = refresh;
-        loop {
-            tokio::time::sleep(Duration::from_secs(2)).await;
-            r.set(r() + 1);
-        }
-    });
-
-    let proxies = use_resource(move || async move {
-        let _ = refresh(); // 依赖:变化即重新拉取
-        let (url, secret) = {
-            let c = config.read();
-            (c.controller_url.clone(), c.secret.clone())
-        };
-        ApiClient::new(url, secret).proxies().await.ok()
-    });
-
-    let cfg_res = use_resource(move || async move {
-        let _ = refresh();
-        let (url, secret) = {
-            let c = config.read();
-            (c.controller_url.clone(), c.secret.clone())
-        };
-        ApiClient::new(url, secret).configs().await.ok()
-    });
-    let current_mode = match cfg_res() {
-        Some(Some(c)) => c.mode,
-        _ => String::new(),
-    };
-
-    let map: BTreeMap<String, Proxy> = match proxies() {
-        Some(Some(p)) => p.proxies,
-        _ => BTreeMap::new(),
+    // 数据来自 App 的集中遥测;动作后通过 tele.poke 触发立即刷新。
+    let current_mode = tele
+        .configs
+        .read()
+        .as_ref()
+        .map(|c| c.mode.clone())
+        .unwrap_or_default();
+    let map: BTreeMap<String, Proxy> = match tele.proxies.read().as_ref() {
+        Some(p) => p.proxies.clone(),
+        None => BTreeMap::new(),
     };
     // 隐藏内置的 GLOBAL 组(规则模式下无意义),只显示订阅里的可选组
     let groups: Vec<Proxy> = map
@@ -89,8 +64,8 @@ pub fn ProxyGroups() -> Element {
                                                 };
                                                 spawn(async move {
                                                     let _ = ApiClient::new(url, secret).set_mode(val).await;
-                                                    let mut r = refresh;
-                                                    r.set(r() + 1);
+                                                    let mut poke = tele.poke;
+                                                    poke.set(poke() + 1);
                                                 });
                                             },
                                             "{label}"
@@ -135,8 +110,8 @@ pub fn ProxyGroups() -> Element {
                                             testing.write().insert(g.clone());
                                             spawn(async move {
                                                 let _ = ApiClient::new(url, secret).group_delay(&g).await;
-                                                let mut r = refresh;
-                                                r.set(r() + 1);
+                                                let mut poke = tele.poke;
+                                                poke.set(poke() + 1);
                                                 testing.write().remove(&g);
                                             });
                                         },
@@ -174,8 +149,8 @@ pub fn ProxyGroups() -> Element {
                                                         };
                                                         spawn(async move {
                                                             let _ = ApiClient::new(url, secret).select_proxy(&g, &m).await;
-                                                            let mut r = refresh;
-                                                            r.set(r() + 1);
+                                                            let mut poke = tele.poke;
+                                                            poke.set(poke() + 1);
                                                         });
                                                     },
                                                     // 选中节点:红点标识

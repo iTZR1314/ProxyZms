@@ -1,40 +1,13 @@
-use crate::config::AppConfig;
 use crate::format;
-use crate::mihomo::types::Connections;
-use crate::mihomo::ApiClient;
+use crate::Telemetry;
 use dioxus::prelude::*;
-use std::time::Duration;
 
 #[component]
 pub fn ConnectionsView() -> Element {
-    let config = use_context::<Signal<AppConfig>>();
-    let mut data = use_signal(Connections::default);
-    let mut online = use_signal(|| false);
-
-    use_future(move || async move {
-        let mut last_cfg: Option<AppConfig> = None;
-        let mut client: Option<ApiClient> = None;
-        loop {
-            let cfg = config();
-            if last_cfg.as_ref() != Some(&cfg) {
-                client = Some(ApiClient::new(
-                    cfg.controller_url.clone(),
-                    cfg.secret.clone(),
-                ));
-                last_cfg = Some(cfg);
-            }
-            match client.as_ref().unwrap().connections().await {
-                Ok(c) => {
-                    online.set(true);
-                    data.set(c);
-                }
-                Err(_) => online.set(false),
-            }
-            tokio::time::sleep(Duration::from_secs(2)).await;
-        }
-    });
-
-    let snap = data();
+    let tele = use_context::<Telemetry>();
+    let online = tele.online;
+    let connections = tele.connections;
+    let snap = connections().unwrap_or_default();
 
     rsx! {
         div { class: "px-6 md:px-12 py-10",

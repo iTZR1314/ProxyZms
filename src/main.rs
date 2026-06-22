@@ -17,11 +17,23 @@ mod views;
 
 use config::AppConfig;
 use mihomo::Controller;
+use mihomo::types;
 use views::{ConnectionsView, Flow, Settings};
 
 /// 全局共享的 TUN 开关状态:UI(TunControls)与系统托盘共用同一信号,保证一致。
 #[derive(Clone, Copy)]
 pub struct TunState(pub Signal<bool>);
+
+/// 控制器集中遥测:整个应用只跑下面的轮询循环,各视图从 context 共享读取,
+/// 不再各自重复轮询。动作后 bump `poke` 可让轮询立即重取一次。
+#[derive(Clone, Copy)]
+pub struct Telemetry {
+    pub online: Signal<bool>,
+    pub configs: Signal<Option<types::Configs>>,
+    pub connections: Signal<Option<types::Connections>>,
+    pub proxies: Signal<Option<types::Proxies>>,
+    pub poke: Signal<u32>,
+}
 
 #[derive(Debug, Clone, Routable, PartialEq)]
 #[rustfmt::skip]
@@ -275,31 +287,98 @@ fn App() -> Element {
     use_context_provider(Controller::default);
     let mut tun_state = use_context_provider(|| TunState(Signal::new(false))).0;
 
+    // 集中遥测:所有视图共享读取,避免每个页面各自重复轮询
+    let tele = use_context_provider(|| Telemetry {
+        online: Signal::new(false),
+        configs: Signal::new(None),
+        connections: Signal::new(None),
+        proxies: Signal::new(None),
+        poke: Signal::new(0),
+    });
+
     // 挂载后设置 Dock 图标(此时 NSApplication 已就绪)
     use_effect(|| {
         #[cfg(target_os = "macos")]
         set_dock_icon();
     });
 
-    // 唯一的 TUN 状态源:轮询 /configs 写入共享信号(UI 与托盘都读它)
+    // 集中遥测:全应用仅有的两个控制器轮询循环。各视图改为从 `Telemetry` context
+    // 读取结果,避免每个页面各自重复打 /configs、/connections、/proxies。
+    let Telemetry { mut online, mut configs, mut connections, mut proxies, poke } = tele;
+
+    // (1) /connections:固定每秒一次 —— 驱动流量曲线/连接列表,并据此判断在线。
     use_future(move || async move {
+        let mut last_cfg: Option<AppConfig> = None;
+        let mut client: Option<mihomo::ApiClient> = None;
         loop {
-            let (url, secret) = {
-                let c = config.read();
-                (c.controller_url.clone(), c.secret.clone())
-            };
-            let on = match mihomo::ApiClient::new(url, secret).configs().await {
-                Ok(c) => c.tun.enable,
-                Err(e) => {
-                    eprintln!("[zms] 轮询 /configs 失败: {e}");
-                    false
-                }
-            };
-            if tun_state() != on {
-                eprintln!("[zms] TUN 状态轮询更新: {on}");
-                tun_state.set(on);
+            let cfg = config();
+            if last_cfg.as_ref() != Some(&cfg) {
+                client = Some(mihomo::ApiClient::new(
+                    cfg.controller_url.clone(),
+                    cfg.secret.clone(),
+                ));
+                last_cfg = Some(cfg);
             }
-            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            match client.as_ref().unwrap().connections().await {
+                Ok(c) => {
+                    connections.set(Some(c));
+                    if !online() {
+                        online.set(true);
+                    }
+                }
+                Err(_) => {
+                    connections.set(None);
+                    if online() {
+                        online.set(false);
+                    }
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        }
+    });
+
+    // (2) /configs + /proxies:每 2 秒一次(TUN 状态 + 代理模式 + 节点列表);
+    //     动作(切节点/测速/切模式)会 bump tele.poke,让本循环立即重取一次。
+    use_future(move || async move {
+        let mut last_cfg: Option<AppConfig> = None;
+        let mut client: Option<mihomo::ApiClient> = None;
+        let mut last_poke: u32 = poke();
+        loop {
+            let cfg = config();
+            if last_cfg.as_ref() != Some(&cfg) {
+                client = Some(mihomo::ApiClient::new(
+                    cfg.controller_url.clone(),
+                    cfg.secret.clone(),
+                ));
+                last_cfg = Some(cfg);
+            }
+            let api = client.as_ref().unwrap();
+
+            match api.configs().await {
+                Ok(c) => {
+                    if tun_state() != c.tun.enable {
+                        tun_state.set(c.tun.enable);
+                    }
+                    configs.set(Some(c));
+                }
+                Err(_) => {
+                    if tun_state() {
+                        tun_state.set(false);
+                    }
+                }
+            }
+            if let Ok(p) = api.proxies().await {
+                proxies.set(Some(p));
+            }
+
+            // 睡 2 秒,期间一旦被 poke 就提前唤醒(动作后秒级刷新)
+            for _ in 0..20 {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                if poke() != last_poke {
+                    break;
+                }
+            }
+            last_poke = poke();
         }
     });
 

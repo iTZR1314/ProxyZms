@@ -11,14 +11,6 @@ where
     Ok(Option::<T>::deserialize(de)?.unwrap_or_default())
 }
 
-/// `GET /version`
-#[derive(Debug, Clone, Deserialize, PartialEq)]
-pub struct Version {
-    pub version: String,
-    #[serde(default)]
-    pub meta: bool,
-}
-
 /// `GET /connections` 的快照,含累计流量、内存与当前连接。
 #[derive(Debug, Clone, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]

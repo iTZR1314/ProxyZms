@@ -1,5 +1,5 @@
 //! mihomo External Controller 的轻量 REST 客户端。
-use super::types::{Configs, Connections, Proxies, Version};
+use super::types::{Configs, Connections, Proxies};
 use reqwest::Client;
 use std::time::Duration;
 
@@ -42,11 +42,6 @@ impl ApiClient {
         } else {
             req.bearer_auth(&self.secret)
         }
-    }
-
-    /// 读取版本;成功即代表控制器在线。
-    pub async fn version(&self) -> reqwest::Result<Version> {
-        self.get("/version").send().await?.json().await
     }
 
     /// 累计流量、内存占用与当前连接快照。
