@@ -3979,29 +3979,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "proxy-zms"
-version = "0.0.12"
-dependencies = [
- "base64",
- "ctrlc",
- "dioxus",
- "dirs",
- "embed-resource",
- "flate2",
- "futures-util",
- "image",
- "objc",
- "reqwest 0.13.4",
- "serde",
- "serde_json",
- "tokio",
- "tokio-tungstenite",
- "urlencoding",
- "webbrowser",
- "zip",
-]
-
-[[package]]
 name = "psl-types"
 version = "2.0.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6899,4 +6876,27 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "27bc9d5b815bc103f142aa054f561d9187d191692ec7c2d1e2b4737f8dbd7296"
 dependencies = [
  "zune-core",
+]
+
+[[package]]
+name = "东莞锦荣纺织"
+version = "0.0.12"
+dependencies = [
+ "base64",
+ "ctrlc",
+ "dioxus",
+ "dirs",
+ "embed-resource",
+ "flate2",
+ "futures-util",
+ "image",
+ "objc",
+ "reqwest 0.13.4",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-tungstenite",
+ "urlencoding",
+ "webbrowser",
+ "zip",
 ]

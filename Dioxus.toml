@@ -1,9 +1,5 @@
-[application]
-# 安装后用户看到的显示名(macOS Dock/Finder/.app 文件夹名;
-# Windows NSIS 安装器/桌面快捷方式/开始菜单/"应用与功能"列表)。
-# Rust 包名(Cargo.toml 的 proxy-zms)保持不变 —— 那是内部标识符,改了破坏升级链。
-name = "东莞锦荣纺织"
-# 发布打包时的应用图标(macOS .app / Windows .exe)
+# 注:macOS .app 名 / Windows NSIS 显示名 全部从 Cargo.toml 的 [package].name 派生。
+# 改名直接改 Cargo.toml。Dioxus.toml 这里不需要 [application].name —— 实测不读。
 [bundle]
 identifier = "top.zhoumaosen"
 icon = ["assets/fmr.ico", "assets/fmr.png"]
