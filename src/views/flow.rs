@@ -217,43 +217,44 @@ pub fn Flow() -> Element {
         // 扁平排版:状态 / TUN / 统计 / 节点选择 全部平铺进内容区(无地图、无浮卡)。
         div { class: "px-6 md:px-12 py-10 max-w-4xl",
 
-            // —— 状态头:运行状态 + IPv6 ——
-            header { class: "border-b-2 border-black pb-6",
-                div { class: "text-[11px] uppercase tracking-[0.25em] text-neutral-500", "Mihomo · Status" }
-                div { class: "mt-3 flex items-center gap-3",
-                    span {
-                        class: if online() { "w-3.5 h-3.5 shrink-0 bg-[#e3000f]" } else { "w-3.5 h-3.5 shrink-0 border-2 border-black" },
+            // —— 状态头:左侧 = 运行状态 + IPv6,右侧 = TUN 开关(垂直居中) ——
+            header { class: "border-b-2 border-black pb-6 flex items-center justify-between gap-6",
+                div {
+                    div { class: "text-[11px] uppercase tracking-[0.25em] text-neutral-500", "Mihomo · Status" }
+                    div { class: "mt-3 flex items-center gap-3",
+                        span {
+                            class: if online() { "w-3.5 h-3.5 shrink-0 bg-[#e3000f]" } else { "w-3.5 h-3.5 shrink-0 border-2 border-black" },
+                        }
+                        h1 { class: "text-4xl font-bold tracking-tighter leading-none",
+                            if online() { "RUNNING" } else { "OFFLINE" }
+                        }
                     }
-                    h1 { class: "text-4xl font-bold tracking-tighter leading-none",
-                        if online() { "RUNNING" } else { "OFFLINE" }
+                    div { class: "mt-4",
+                        match ipv6() {
+                            None => rsx! {
+                                span { class: "flex items-center gap-2 text-xs uppercase tracking-[0.15em] text-neutral-400",
+                                    span { class: "w-2 h-2 border border-neutral-400" }
+                                    "IPv6 检测中"
+                                }
+                            },
+                            Some(true) => rsx! {
+                                span { class: "flex items-center gap-2 text-xs uppercase tracking-[0.15em] text-neutral-700",
+                                    span { class: "w-2 h-2 bg-neutral-900" }
+                                    "支持 IPv6"
+                                }
+                            },
+                            Some(false) => rsx! {
+                                span { class: "flex items-center gap-2 text-xs uppercase tracking-[0.15em] text-[#e3000f]",
+                                    span { class: "w-2 h-2 bg-[#e3000f]" }
+                                    "不支持 IPv6"
+                                }
+                            },
+                        }
                     }
                 }
-                div { class: "mt-4",
-                    match ipv6() {
-                        None => rsx! {
-                            span { class: "flex items-center gap-2 text-xs uppercase tracking-[0.15em] text-neutral-400",
-                                span { class: "w-2 h-2 border border-neutral-400" }
-                                "IPv6 检测中"
-                            }
-                        },
-                        Some(true) => rsx! {
-                            span { class: "flex items-center gap-2 text-xs uppercase tracking-[0.15em] text-neutral-700",
-                                span { class: "w-2 h-2 bg-neutral-900" }
-                                "支持 IPv6"
-                            }
-                        },
-                        Some(false) => rsx! {
-                            span { class: "flex items-center gap-2 text-xs uppercase tracking-[0.15em] text-[#e3000f]",
-                                span { class: "w-2 h-2 bg-[#e3000f]" }
-                                "不支持 IPv6"
-                            }
-                        },
-                    }
-                }
+                // 右侧:TUN 开关(header 是 flex items-center,自动垂直居中)
+                div { class: "shrink-0", TunControls {} }
             }
-
-            // —— TUN 开关 ——
-            div { class: "mt-6", TunControls {} }
 
             if let Some(err) = error() {
                 div { class: "mt-6 border-l-4 border-[#e3000f] pl-4 py-2 text-sm text-neutral-700", "{err}" }
