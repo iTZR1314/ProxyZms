@@ -57,16 +57,17 @@ pub fn Flow() -> Element {
     let tele = use_context::<Telemetry>();
     let online = tele.online;
     let connections = tele.connections;
+    // 派生时序状态(瞬时速率、48 格滚动曲线)统一在 App() 里算并写入 Telemetry,
+    // Flow 只读 —— 跨页切换不丢数据,曲线连续。
+    let down_speed = tele.down_speed;
+    let up_speed = tele.up_speed;
+    let history = tele.history;
 
     let mut setup = use_signal(|| Setup::Checking);
     let mut started = use_signal(|| false);
 
-    let mut down_speed = use_signal(|| 0u64);
-    let mut up_speed = use_signal(|| 0u64);
     let mut error = use_signal(|| None::<String>);
     let mut ipv6 = use_signal(|| None::<bool>);
-    // 实时流量条形图:48 个采样点的总速率(down+up,字节/秒),每秒滚动一格
-    let mut history = use_signal(|| vec![0u64; 48]);
 
     // IPv6 支持检测:每 3 秒一次
     use_future(move || async move {
@@ -141,32 +142,6 @@ pub fn Flow() -> Element {
                 if let Err(e) = controller_effect.start(&config.read()) {
                     error.set(Some(format!("启动失败:{e}")));
                 }
-            }
-        }
-    });
-
-    // 流量速率 + 滚动曲线:由集中轮询的 connections 变化驱动(每秒一次)。
-    let mut prev = use_signal(|| None::<(u64, u64)>);
-    use_effect(move || {
-        match connections.read().as_ref() {
-            Some(c) => {
-                let prev_v: Option<(u64, u64)> = *prev.peek();
-                let (pd, pu) = prev_v.unwrap_or((c.download_total, c.upload_total));
-                let d = c.download_total.saturating_sub(pd);
-                let u = c.upload_total.saturating_sub(pu);
-                down_speed.set(d);
-                up_speed.set(u);
-                prev.set(Some((c.download_total, c.upload_total)));
-                let mut h = history.write();
-                h.remove(0);
-                h.push(d + u);
-            }
-            None => {
-                down_speed.set(0);
-                up_speed.set(0);
-                let mut h = history.write();
-                h.remove(0);
-                h.push(0);
             }
         }
     });

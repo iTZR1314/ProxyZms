@@ -33,6 +33,13 @@ pub struct Telemetry {
     pub connections: Signal<Option<types::Connections>>,
     pub proxies: Signal<Option<types::Proxies>>,
     pub poke: Signal<u32>,
+    /// 由 `connections` 差分派生:瞬时下行字节/秒(在 App 里集中算,所有页共享读取)
+    pub down_speed: Signal<u64>,
+    /// 由 `connections` 差分派生:瞬时上行字节/秒
+    pub up_speed: Signal<u64>,
+    /// 48 格滚动曲线:每秒一格的 `down+up` 总速率。在 App 里持续累积,
+    /// 跨页切换不重置 —— 切回流量页能看到真正的近 48 秒滚动窗口。
+    pub history: Signal<Vec<u64>>,
 }
 
 #[derive(Debug, Clone, Routable, PartialEq)]
@@ -312,6 +319,9 @@ fn App() -> Element {
         connections: Signal::new(None),
         proxies: Signal::new(None),
         poke: Signal::new(0),
+        down_speed: Signal::new(0),
+        up_speed: Signal::new(0),
+        history: Signal::new(vec![0u64; 48]),
     });
 
     // 挂载后设置 Dock 图标(此时 NSApplication 已就绪)
@@ -322,7 +332,45 @@ fn App() -> Element {
 
     // 集中遥测:全应用仅有的两个控制器轮询循环。各视图改为从 `Telemetry` context
     // 读取结果,避免每个页面各自重复打 /configs、/connections、/proxies。
-    let Telemetry { mut online, mut configs, mut connections, mut proxies, poke } = tele;
+    let Telemetry {
+        mut online,
+        mut configs,
+        mut connections,
+        mut proxies,
+        poke,
+        mut down_speed,
+        mut up_speed,
+        mut history,
+    } = tele;
+
+    // 派生时序状态:每次 `connections` 更新(WS 1 Hz)→ 算瞬时速率 +
+    // 推一帧到滚动曲线。集中在 App 里跑,不绑死任何页面生命周期。
+    let mut prev_totals = use_signal(|| None::<(u64, u64)>);
+    use_effect(move || {
+        match connections.read().as_ref() {
+            Some(c) => {
+                // 第一帧没有 prev,基线取自己,首格速率为 0,避免开机时刻虚高
+                let (pd, pu) = prev_totals
+                    .peek()
+                    .unwrap_or((c.download_total, c.upload_total));
+                let d = c.download_total.saturating_sub(pd);
+                let u = c.upload_total.saturating_sub(pu);
+                down_speed.set(d);
+                up_speed.set(u);
+                prev_totals.set(Some((c.download_total, c.upload_total)));
+                let mut h = history.write();
+                h.remove(0);
+                h.push(d + u);
+            }
+            None => {
+                down_speed.set(0);
+                up_speed.set(0);
+                let mut h = history.write();
+                h.remove(0);
+                h.push(0);
+            }
+        }
+    });
 
     // (1) /connections 订阅:开一个长连 WebSocket,mihomo 1 Hz 主动推快照。
     //     不再做 HTTP 轮询;断线 1 秒后自动重连(对齐 clash-verge 的 RECONNECT_DELAY_MS)。
