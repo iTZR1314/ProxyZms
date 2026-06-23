@@ -3,14 +3,15 @@ use futures_util::StreamExt;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 
-/// 上游官方 mihomo 发行版:始终拉取最新 stable 版本,无需镜像。
-const VERSION_URL: &str =
-    "https://github.com/MetaCubeX/mihomo/releases/latest/download/version.txt";
-const DOWNLOAD_PREFIX: &str = "https://github.com/MetaCubeX/mihomo/releases/download";
+/// mihomo 内核镜像。用 R2 而非 GitHub 官方源是为绕过 GFW —— 国内拉
+/// `github.com` / `objects.githubusercontent.com` 时常抽风。代价:R2 无版本探测,
+/// 始终是当前桶里那一份;要升级请在 R2 重新上传同名文件。
+const MIHOMO_R2_BASE: &str = "https://r2.zhoumaosen.top/mihomo";
 /// Windows TUN 模式所必需的 wintun 驱动(mihomo 不会自带,缺了 TUN 直接起不来)。
-/// 0.14.1 是 wintun 项目最后一个发行版,自 2021 起未变,可放心固定。
+/// 镜像到 R2 同桶,与 mihomo 二进制走同一通道避免 GFW 抽风;0.14.1 是 wintun 项目
+/// 最后一个发行版,自 2021 起未变,可放心固定;SHA-256 与官方源一字节不差。
 #[cfg(windows)]
-const WINTUN_URL: &str = "https://www.wintun.net/builds/wintun-0.14.1.zip";
+const WINTUN_URL: &str = "https://r2.zhoumaosen.top/mihomo/wintun-0.14.1.zip";
 
 /// 受本程序托管的 mihomo 工作目录:`<config_dir>/proxy-zms/mihomo`
 pub fn data_dir() -> PathBuf {
@@ -44,28 +45,23 @@ pub fn wintun_path() -> PathBuf {
     data_dir().join("wintun.dll")
 }
 
-/// 当前构建目标对应的 mihomo 资源名:`(基础名, 扩展名)`。
-/// 选用上游默认变体(无 `-go12x` / `v1`/`v2` 后缀),兼容所有现代 x86_64 / arm64 主机。
-fn asset() -> Result<(&'static str, &'static str), String> {
-    if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
-        Ok(("mihomo-windows-amd64", "zip"))
+/// 当前构建目标对应的 R2 资源 URL(完整下载链接)。
+/// R2 桶里目前只有这三件,其它架构请上传后再加分支。
+fn asset_url() -> Result<String, String> {
+    let filename = if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
+        "windows.zip"
     } else if cfg!(all(target_os = "windows", target_arch = "aarch64")) {
-        Ok(("mihomo-windows-arm64", "zip"))
-    } else if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
-        Ok(("mihomo-darwin-amd64", "gz"))
+        "windowsarm.zip"
     } else if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
-        Ok(("mihomo-darwin-arm64", "gz"))
-    } else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
-        Ok(("mihomo-linux-amd64", "gz"))
-    } else if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
-        Ok(("mihomo-linux-arm64", "gz"))
+        "mac.gz"
     } else {
-        Err(format!(
-            "不支持的平台:{} {}",
+        return Err(format!(
+            "R2 镜像未上传该架构:{} {}",
             std::env::consts::OS,
             std::env::consts::ARCH
-        ))
-    }
+        ));
+    };
+    Ok(format!("{MIHOMO_R2_BASE}/{filename}"))
 }
 
 /// 默认 config.yaml 的基础内容(不含控制器设置,控制器由本地强制注入)。
@@ -172,32 +168,13 @@ pub async fn download_binary<F: FnMut(u64, Option<u64>)>(
     let dir = data_dir();
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
 
-    let (base, ext) = asset()?;
-    let client = reqwest::Client::new();
-
-    // 先探测最新版本(version.txt 仅几字节)
-    let version = client
-        .get(VERSION_URL)
-        .send()
-        .await
-        .map_err(|e| format!("版本探测失败:{e}"))?
-        .error_for_status()
-        .map_err(|e| format!("版本探测失败:{e}"))?
-        .text()
-        .await
-        .map_err(|e| format!("版本探测失败:{e}"))?
-        .trim()
-        .to_string();
-    if version.is_empty() {
-        return Err("版本信息为空".into());
-    }
-
     let bin = binary_path();
-    // mihomo.exe / mihomo 已存在则不重复下载(节省老用户升级时的几十 MB 流量);
-    // settings.rs 的「重新下载内核」按钮会在调用前显式 remove_file,所以强制刷新仍然有效。
+    // mihomo 已存在则跳过(节省升级流量);
+    // settings.rs 的「重新下载内核」按钮会在调用前先 remove_file,所以强制刷新仍然有效。
     if !bin.exists() {
-        let url = format!("{DOWNLOAD_PREFIX}/{version}/{base}-{version}.{ext}");
-        let resp = client
+        let url = asset_url()?;
+        let is_zip = url.ends_with(".zip");
+        let resp = reqwest::Client::new()
             .get(&url)
             .send()
             .await
@@ -222,7 +199,7 @@ pub async fn download_binary<F: FnMut(u64, Option<u64>)>(
         }
         on_progress(buf.len() as u64, total);
 
-        if ext == "zip" {
+        if is_zip {
             extract_zip(&buf, &bin)?;
         } else {
             extract_gz(&buf, &bin)?;
