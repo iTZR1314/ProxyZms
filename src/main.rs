@@ -80,6 +80,11 @@ fn acquire_single_instance() -> bool {
     const ADDR: &str = "127.0.0.1:53682";
     // 已有实例:通知它显示窗口,本进程退出
     if let Ok(mut stream) = TcpStream::connect(ADDR) {
+        // Windows:把"窃取前台焦点"的权限放给任意进程,主实例 set_focus()
+        // 内部的 SetForegroundWindow 才不会被前台焦点保护策略静默拒掉
+        // (否则只闪任务栏,窗口不前置)。
+        #[cfg(windows)]
+        allow_other_set_foreground();
         let _ = stream.write_all(b"show");
         return false;
     }
@@ -94,6 +99,19 @@ fn acquire_single_instance() -> bool {
         });
     }
     true
+}
+
+/// Windows:把"窃取前台焦点"的权限放给任意进程。仅在第二实例即将退出前调用一次,
+/// 让随后被通知的主实例能用 SetForegroundWindow 把窗口拉到前台。
+#[cfg(all(windows, not(debug_assertions)))]
+fn allow_other_set_foreground() {
+    // ASFW_ANY = 0xFFFFFFFF(允许任意 PID),签名:BOOL AllowSetForegroundWindow(DWORD).
+    #[link(name = "user32")]
+    extern "system" {
+        fn AllowSetForegroundWindow(dwProcessId: u32) -> i32;
+    }
+    const ASFW_ANY: u32 = 0xFFFF_FFFF;
+    unsafe { AllowSetForegroundWindow(ASFW_ANY) };
 }
 
 fn main() {
@@ -306,32 +324,35 @@ fn App() -> Element {
     // 读取结果,避免每个页面各自重复打 /configs、/connections、/proxies。
     let Telemetry { mut online, mut configs, mut connections, mut proxies, poke } = tele;
 
-    // (1) /connections:固定每秒一次 —— 驱动流量曲线/连接列表,并据此判断在线。
+    // (1) /connections 订阅:开一个长连 WebSocket,mihomo 1 Hz 主动推快照。
+    //     不再做 HTTP 轮询;断线 1 秒后自动重连(对齐 clash-verge 的 RECONNECT_DELAY_MS)。
+    //     断线时保留最后一帧 connections,只翻 online,UI 不抖到 0。
     use_future(move || async move {
-        let mut last_cfg: Option<AppConfig> = None;
-        let mut client: Option<mihomo::ApiClient> = None;
+        use futures_util::StreamExt as _;
         loop {
-            let cfg = config();
-            if last_cfg.as_ref() != Some(&cfg) {
-                client = Some(mihomo::ApiClient::new(
-                    cfg.controller_url.clone(),
-                    cfg.secret.clone(),
-                ));
-                last_cfg = Some(cfg);
-            }
-            match client.as_ref().unwrap().connections().await {
-                Ok(c) => {
-                    connections.set(Some(c));
+            // 仅在 connect 时读取一次配置;运行中若用户改了 URL/secret,
+            // 要等本次流终止才会用新值重连。
+            let (url, secret) = {
+                let c = config.read();
+                (c.controller_url.clone(), c.secret.clone())
+            };
+            let client = mihomo::ApiClient::new(url, secret);
+            match client.subscribe_connections().await {
+                Ok(mut stream) => {
                     if !online() {
                         online.set(true);
                     }
-                }
-                Err(_) => {
-                    connections.set(None);
-                    if online() {
-                        online.set(false);
+                    while let Some(msg) = stream.next().await {
+                        match msg {
+                            Ok(c) => connections.set(Some(c)),
+                            Err(_) => break, // 解析或传输出错 → 跳出去重连
+                        }
                     }
                 }
+                Err(_) => { /* connect 失败,落入下面的 1s 重试 */ }
+            }
+            if online() {
+                online.set(false);
             }
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         }

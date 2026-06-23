@@ -210,7 +210,8 @@ fn kill_pid(pid: u32) {
 #[cfg(windows)]
 fn kill_pid(pid: u32) {
     let mut cmd = Command::new("taskkill");
-    cmd.args(["/F", "/PID", &pid.to_string()]);
+    // /T:连同 mihomo 派生的子进程一起 kill,避免 TUN 模式下的辅助进程成为孤儿
+    cmd.args(["/F", "/T", "/PID", &pid.to_string()]);
     no_window(&mut cmd);
     let _ = cmd.status();
 }

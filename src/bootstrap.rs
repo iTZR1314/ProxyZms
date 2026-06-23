@@ -7,6 +7,10 @@ use std::path::{Path, PathBuf};
 const VERSION_URL: &str =
     "https://github.com/MetaCubeX/mihomo/releases/latest/download/version.txt";
 const DOWNLOAD_PREFIX: &str = "https://github.com/MetaCubeX/mihomo/releases/download";
+/// Windows TUN 模式所必需的 wintun 驱动(mihomo 不会自带,缺了 TUN 直接起不来)。
+/// 0.14.1 是 wintun 项目最后一个发行版,自 2021 起未变,可放心固定。
+#[cfg(windows)]
+const WINTUN_URL: &str = "https://www.wintun.net/builds/wintun-0.14.1.zip";
 
 /// 受本程序托管的 mihomo 工作目录:`<config_dir>/proxy-zms/mihomo`
 pub fn data_dir() -> PathBuf {
@@ -22,9 +26,22 @@ pub fn binary_path() -> PathBuf {
     data_dir().join(name)
 }
 
-/// 二进制是否已就位。
+/// 全部托管资源就位:mihomo 二进制 + Windows 下的 wintun.dll。
 pub fn is_installed() -> bool {
-    binary_path().exists()
+    if !binary_path().exists() {
+        return false;
+    }
+    #[cfg(windows)]
+    if !wintun_path().exists() {
+        return false;
+    }
+    true
+}
+
+/// Windows TUN 所需 wintun.dll 路径(放在 mihomo.exe 同目录,mihomo 会按该处加载)。
+#[cfg(windows)]
+pub fn wintun_path() -> PathBuf {
+    data_dir().join("wintun.dll")
 }
 
 /// 当前构建目标对应的 mihomo 资源名:`(基础名, 扩展名)`。
@@ -175,41 +192,49 @@ pub async fn download_binary<F: FnMut(u64, Option<u64>)>(
         return Err("版本信息为空".into());
     }
 
-    let url = format!("{DOWNLOAD_PREFIX}/{version}/{base}-{version}.{ext}");
-    let resp = client
-        .get(&url)
-        .send()
-        .await
-        .map_err(|e| format!("请求失败:{e}"))?
-        .error_for_status()
-        .map_err(|e| format!("下载失败:{e}"))?;
-
-    let total = resp.content_length();
-    let mut stream = resp.bytes_stream();
-    let mut buf: Vec<u8> = Vec::new();
-    let mut last_report = 0u64;
-    on_progress(0, total);
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| format!("传输中断:{e}"))?;
-        buf.extend_from_slice(&chunk);
-        let done = buf.len() as u64;
-        // 每 256KB 上报一次,避免过于频繁地触发重渲染
-        if done - last_report >= 256 * 1024 {
-            last_report = done;
-            on_progress(done, total);
-        }
-    }
-    on_progress(buf.len() as u64, total);
-
     let bin = binary_path();
-    if ext == "zip" {
-        extract_zip(&buf, &bin)?;
-    } else {
-        extract_gz(&buf, &bin)?;
+    // mihomo.exe / mihomo 已存在则不重复下载(节省老用户升级时的几十 MB 流量);
+    // settings.rs 的「重新下载内核」按钮会在调用前显式 remove_file,所以强制刷新仍然有效。
+    if !bin.exists() {
+        let url = format!("{DOWNLOAD_PREFIX}/{version}/{base}-{version}.{ext}");
+        let resp = client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| format!("请求失败:{e}"))?
+            .error_for_status()
+            .map_err(|e| format!("下载失败:{e}"))?;
+
+        let total = resp.content_length();
+        let mut stream = resp.bytes_stream();
+        let mut buf: Vec<u8> = Vec::new();
+        let mut last_report = 0u64;
+        on_progress(0, total);
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|e| format!("传输中断:{e}"))?;
+            buf.extend_from_slice(&chunk);
+            let done = buf.len() as u64;
+            // 每 256KB 上报一次,避免过于频繁地触发重渲染
+            if done - last_report >= 256 * 1024 {
+                last_report = done;
+                on_progress(done, total);
+            }
+        }
+        on_progress(buf.len() as u64, total);
+
+        if ext == "zip" {
+            extract_zip(&buf, &bin)?;
+        } else {
+            extract_gz(&buf, &bin)?;
+        }
+        set_executable(&bin)?;
     }
-    set_executable(&bin)?;
+
+    // Windows 上额外保证 wintun.dll 就位(已存在则不动)。
+    ensure_wintun().await?;
     Ok(bin)
 }
+
 
 /// 解压单文件 gzip 到目标路径。
 fn extract_gz(data: &[u8], out: &Path) -> Result<(), String> {
@@ -251,5 +276,56 @@ fn set_executable(path: &Path) -> Result<(), String> {
 
 #[cfg(not(unix))]
 fn set_executable(_path: &Path) -> Result<(), String> {
+    Ok(())
+}
+
+/// Windows 下若 wintun.dll 缺失则从 wintun.net 下载并解压对应架构的 DLL。
+/// 非 Windows 平台为 no-op。
+#[cfg(windows)]
+async fn ensure_wintun() -> Result<(), String> {
+    let out = wintun_path();
+    if out.exists() {
+        return Ok(());
+    }
+    let arch_dir = if cfg!(target_arch = "x86_64") {
+        "amd64"
+    } else if cfg!(target_arch = "aarch64") {
+        "arm64"
+    } else {
+        return Err(format!(
+            "wintun 不支持当前架构:{}",
+            std::env::consts::ARCH
+        ));
+    };
+    let bytes = reqwest::Client::new()
+        .get(WINTUN_URL)
+        .send()
+        .await
+        .map_err(|e| format!("wintun 下载失败:{e}"))?
+        .error_for_status()
+        .map_err(|e| format!("wintun 下载失败:{e}"))?
+        .bytes()
+        .await
+        .map_err(|e| format!("wintun 下载失败:{e}"))?
+        .to_vec();
+    // 包内布局:wintun/bin/{amd64,arm64,x86,arm}/wintun.dll
+    let want_suffix = format!("bin/{arch_dir}/wintun.dll");
+    let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).map_err(|e| e.to_string())?;
+    for i in 0..zip.len() {
+        let mut entry = zip.by_index(i).map_err(|e| e.to_string())?;
+        if !entry.is_file() {
+            continue;
+        }
+        if entry.name().replace('\\', "/").ends_with(&want_suffix) {
+            let mut file = std::fs::File::create(&out).map_err(|e| e.to_string())?;
+            std::io::copy(&mut entry, &mut file).map_err(|e| e.to_string())?;
+            return Ok(());
+        }
+    }
+    Err(format!("wintun.zip 中未找到 {want_suffix}"))
+}
+
+#[cfg(not(windows))]
+async fn ensure_wintun() -> Result<(), String> {
     Ok(())
 }

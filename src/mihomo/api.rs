@@ -1,7 +1,9 @@
-//! mihomo External Controller 的轻量 REST 客户端。
+//! mihomo External Controller 的轻量 REST + WebSocket 客户端。
 use super::types::{Configs, Connections, Proxies};
+use futures_util::{Stream, StreamExt};
 use reqwest::Client;
 use std::time::Duration;
+use tokio_tungstenite::tungstenite::{client::IntoClientRequest, http::HeaderValue, Message};
 
 #[derive(Clone)]
 pub struct ApiClient {
@@ -44,9 +46,41 @@ impl ApiClient {
         }
     }
 
-    /// 累计流量、内存占用与当前连接快照。
-    pub async fn connections(&self) -> reqwest::Result<Connections> {
-        self.get("/connections").send().await?.json().await
+    /// 订阅 `/connections` 的 WebSocket 推送流(mihomo 1 Hz 主动推快照)。
+    /// 返回的 `Stream` 每帧产出一个解析好的 `Connections`,出错或对端关闭即终止 —
+    /// 调用方负责重连(我们的 `main.rs::Poller A` 用 1s 延迟重连)。
+    ///
+    /// 不持久化 client 状态:连接里若 secret/URL 变化,要等当前流终止后下次 connect 才会生效。
+    pub async fn subscribe_connections(
+        &self,
+    ) -> Result<impl Stream<Item = Result<Connections, String>>, String> {
+        let ws_url = http_to_ws(&self.base) + "/connections";
+        let mut req = ws_url
+            .into_client_request()
+            .map_err(|e| format!("WS 请求构造失败:{e}"))?;
+        if !self.secret.is_empty() {
+            let val = HeaderValue::from_str(&format!("Bearer {}", self.secret))
+                .map_err(|e| format!("非法 secret:{e}"))?;
+            req.headers_mut().insert("Authorization", val);
+        }
+        let (ws, _) = tokio_tungstenite::connect_async(req)
+            .await
+            .map_err(|e| format!("WS 连接失败:{e}"))?;
+        // 用 std::future::ready 包裹同步结果 —— async 块本身不是 Unpin,
+        // 会让外层 FilterMap 也不 Unpin,导致调用方无法 `.next().await`。
+        Ok(ws.filter_map(|msg| {
+            std::future::ready(match msg {
+                Ok(Message::Text(t)) => {
+                    Some(serde_json::from_str::<Connections>(&t).map_err(|e| e.to_string()))
+                }
+                Ok(Message::Binary(b)) => {
+                    Some(serde_json::from_slice::<Connections>(&b).map_err(|e| e.to_string()))
+                }
+                // 控制帧 / ping / pong 一律忽略;tungstenite 已自动回 pong。
+                Ok(_) => None,
+                Err(e) => Some(Err(e.to_string())),
+            })
+        }))
     }
 
     /// 所有节点与策略组。
@@ -98,5 +132,16 @@ impl ApiClient {
         );
         self.get(&path).send().await?.error_for_status()?;
         Ok(())
+    }
+}
+
+/// `http(s)://host:port` → `ws(s)://host:port`(末尾 `/` 已由 `ApiClient::new` 去掉)。
+fn http_to_ws(base: &str) -> String {
+    if let Some(rest) = base.strip_prefix("https://") {
+        format!("wss://{rest}")
+    } else if let Some(rest) = base.strip_prefix("http://") {
+        format!("ws://{rest}")
+    } else {
+        format!("ws://{base}")
     }
 }
