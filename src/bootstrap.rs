@@ -3,8 +3,10 @@ use futures_util::StreamExt;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 
-const MAC_URL: &str = "https://r2.zhoumaosen.top/mihomo/mac.gz";
-const WIN_URL: &str = "https://r2.zhoumaosen.top/mihomo/windows.zip";
+/// 上游官方 mihomo 发行版:始终拉取最新 stable 版本,无需镜像。
+const VERSION_URL: &str =
+    "https://github.com/MetaCubeX/mihomo/releases/latest/download/version.txt";
+const DOWNLOAD_PREFIX: &str = "https://github.com/MetaCubeX/mihomo/releases/download";
 
 /// 受本程序托管的 mihomo 工作目录:`<config_dir>/proxy-zms/mihomo`
 pub fn data_dir() -> PathBuf {
@@ -25,11 +27,27 @@ pub fn is_installed() -> bool {
     binary_path().exists()
 }
 
-fn download_url() -> &'static str {
-    if cfg!(windows) {
-        WIN_URL
+/// 当前构建目标对应的 mihomo 资源名:`(基础名, 扩展名)`。
+/// 选用上游默认变体(无 `-go12x` / `v1`/`v2` 后缀),兼容所有现代 x86_64 / arm64 主机。
+fn asset() -> Result<(&'static str, &'static str), String> {
+    if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
+        Ok(("mihomo-windows-amd64", "zip"))
+    } else if cfg!(all(target_os = "windows", target_arch = "aarch64")) {
+        Ok(("mihomo-windows-arm64", "zip"))
+    } else if cfg!(all(target_os = "macos", target_arch = "x86_64")) {
+        Ok(("mihomo-darwin-amd64", "gz"))
+    } else if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        Ok(("mihomo-darwin-arm64", "gz"))
+    } else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        Ok(("mihomo-linux-amd64", "gz"))
+    } else if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
+        Ok(("mihomo-linux-arm64", "gz"))
     } else {
-        MAC_URL
+        Err(format!(
+            "不支持的平台:{} {}",
+            std::env::consts::OS,
+            std::env::consts::ARCH
+        ))
     }
 }
 
@@ -137,8 +155,29 @@ pub async fn download_binary<F: FnMut(u64, Option<u64>)>(
     let dir = data_dir();
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
 
-    let resp = reqwest::Client::new()
-        .get(download_url())
+    let (base, ext) = asset()?;
+    let client = reqwest::Client::new();
+
+    // 先探测最新版本(version.txt 仅几字节)
+    let version = client
+        .get(VERSION_URL)
+        .send()
+        .await
+        .map_err(|e| format!("版本探测失败:{e}"))?
+        .error_for_status()
+        .map_err(|e| format!("版本探测失败:{e}"))?
+        .text()
+        .await
+        .map_err(|e| format!("版本探测失败:{e}"))?
+        .trim()
+        .to_string();
+    if version.is_empty() {
+        return Err("版本信息为空".into());
+    }
+
+    let url = format!("{DOWNLOAD_PREFIX}/{version}/{base}-{version}.{ext}");
+    let resp = client
+        .get(&url)
         .send()
         .await
         .map_err(|e| format!("请求失败:{e}"))?
@@ -163,7 +202,7 @@ pub async fn download_binary<F: FnMut(u64, Option<u64>)>(
     on_progress(buf.len() as u64, total);
 
     let bin = binary_path();
-    if cfg!(windows) {
+    if ext == "zip" {
         extract_zip(&buf, &bin)?;
     } else {
         extract_gz(&buf, &bin)?;
