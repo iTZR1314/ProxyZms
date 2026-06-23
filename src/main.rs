@@ -153,7 +153,7 @@ fn main() {
         };
 
         let window = WindowBuilder::new()
-            .with_title("暴暴龙专属")
+            .with_title("东莞锦荣纺织")
             .with_window_icon(icon)
             // 默认窗口宽高(逻辑像素),并设置最小尺寸
             .with_inner_size(LogicalSize::new(900.0, 825.0))
@@ -576,7 +576,7 @@ fn Shell() -> Element {
             aside { class: "w-52 shrink-0 border-r border-black/15 bg-white flex flex-col",
                 // 品牌区
                 div { class: "px-6 py-8 border-b-2 border-black",
-                    div { class: "text-2xl font-bold tracking-tighter leading-none", "Mihomo" }
+                    div { class: "text-2xl font-bold tracking-tighter leading-none", "东莞锦荣纺织" }
                     div { class: "mt-2 text-[10px] uppercase tracking-[0.25em] text-neutral-500",
                         "Mihomo Controller"
                     }
