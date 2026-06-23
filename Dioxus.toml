@@ -1,9 +1,12 @@
-# 注:macOS .app 名 / Windows NSIS 显示名 全部从 Cargo.toml 的 [package].name 派生。
-# 改名直接改 Cargo.toml。Dioxus.toml 这里不需要 [application].name —— 实测不读。
+[application]
+# dx 0.7 要求 [application] 表必须存在(即使为空),否则解析报 missing field `application`。
+# 注:macOS .app 名 / Windows NSIS 显示名 全部从 Cargo.toml 的 [package].name 派生,
+# 这里不需要 [application].name(实测 dx 0.7 的 bundler 不读)。
+
 [bundle]
 identifier = "top.zhoumaosen"
-icon = ["assets/fmr.ico", "assets/fmr.png"]
 publisher = "ZHOUMAOSEN"
+icon = ["assets/fmr.ico", "assets/fmr.png"]
 
 [web.app]
 
