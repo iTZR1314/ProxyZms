@@ -1,3 +1,6 @@
 #pragma code_page(65001)
 // CREATEPROCESS_MANIFEST_RESOURCE_ID (1)  RT_MANIFEST (24)
 1 24 "proxyzms.manifest"
+// 主图标:嵌进 .exe 让 Windows Explorer / 任务栏 / 快捷方式都能拿到
+// (dx bundle 只用 Dioxus.toml 的 bundle.icon 做 NSIS 安装器外壳,不会改 exe 本身)
+1 ICON "assets/fmr.ico"
