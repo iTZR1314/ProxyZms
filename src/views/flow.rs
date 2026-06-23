@@ -266,7 +266,7 @@ pub fn Flow() -> Element {
                 let max = hist.iter().copied().max().unwrap_or(0).max(1);
                 let last = hist.len().saturating_sub(1);
                 rsx! {
-                    div { class: "mt-8 border-t-2 border-black pt-5",
+                    div { class: "mt-8",
                         div { class: "flex items-baseline justify-between pb-4",
                             div { class: "text-[11px] uppercase tracking-[0.2em] text-neutral-500", "实时流量 / Throughput" }
                             div { class: "flex gap-4 tabular-nums",
