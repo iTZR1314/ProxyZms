@@ -18,7 +18,7 @@ mod views;
 use config::AppConfig;
 use mihomo::Controller;
 use mihomo::types;
-use views::{ConnectionsView, Flow, Settings};
+use views::{ConnectionsView, Flow, Nodes, Settings};
 
 /// 全局共享的 TUN 开关状态:UI(TunControls)与系统托盘共用同一信号,保证一致。
 #[derive(Clone, Copy)]
@@ -48,6 +48,8 @@ enum Route {
     #[layout(Shell)]
     #[route("/")]
     FlowPage {},
+    #[route("/nodes")]
+    NodesPage {},
     #[route("/connections")]
     Connections {},
     #[route("/settings")]
@@ -153,7 +155,7 @@ fn main() {
         };
 
         let window = WindowBuilder::new()
-            .with_title("东莞锦荣纺织")
+            .with_title("VPN JR")
             .with_window_icon(icon)
             // 默认窗口宽高(逻辑像素),并设置最小尺寸
             .with_inner_size(LogicalSize::new(900.0, 825.0))
@@ -570,13 +572,22 @@ fn App() -> Element {
 /// 侧边栏 + 内容区的整体布局(Swiss 网格)。
 #[component]
 fn Shell() -> Element {
+    // 全局只有一条滚动条:外层 <main>。按路由切换——只有「连接」页内容可能溢出,
+    // 让它出滚动条;其它页(流量/节点/设置)用满高列布局自适应高度,不出滚动条;
+    // 节点页超多节点时,只在芯片区内部静默滚动(.no-scrollbar)。
+    let main_class = match use_route::<Route>() {
+        Route::Connections {} => {
+            "flex-1 min-w-0 overflow-y-auto overflow-x-hidden overscroll-none"
+        }
+        _ => "flex-1 min-w-0 overflow-hidden overscroll-none",
+    };
     rsx! {
         div { class: "flex h-screen bg-white text-neutral-900 overflow-hidden",
             // 导航栏:实心白底,右侧发丝分隔线。
             aside { class: "w-52 shrink-0 border-r border-black/15 bg-white flex flex-col",
                 // 品牌区
                 div { class: "px-6 py-8 border-b-2 border-black",
-                    div { class: "text-2xl font-bold tracking-tighter leading-none", "东莞锦荣纺织" }
+                    div { class: "text-2xl font-bold tracking-tighter leading-none", "VPN JR" }
                     div { class: "mt-2 text-[10px] uppercase tracking-[0.25em] text-neutral-500",
                         "Mihomo Controller"
                     }
@@ -584,8 +595,9 @@ fn Shell() -> Element {
                 // 编号导航
                 nav { class: "flex-1 py-2",
                     NavItem { to: Route::FlowPage {}, index: "01", label: "流量" }
-                    NavItem { to: Route::Connections {}, index: "02", label: "连接" }
-                    NavItem { to: Route::SettingsPage {}, index: "03", label: "设置" }
+                    NavItem { to: Route::NodesPage {}, index: "02", label: "节点" }
+                    NavItem { to: Route::Connections {}, index: "03", label: "连接" }
+                    NavItem { to: Route::SettingsPage {}, index: "04", label: "设置" }
                 }
                 // 页脚:点击图标跳转作者主页
                 div { class: "mt-auto",
@@ -597,13 +609,13 @@ fn Shell() -> Element {
                         img { src: fmr_logo_uri(), class: "w-16 h-16", alt: "付满瑞印" }
                         div { class: "text-center leading-tight",
                             div { class: "text-xs uppercase tracking-[0.2em] text-neutral-600", "fumanrui" }
-                            div { class: "text-[10px] uppercase tracking-[0.2em] text-neutral-400", "2026 v0.0.4" }
+                            div { class: "text-[10px] uppercase tracking-[0.2em] text-neutral-400", {concat!("2026 v", env!("CARGO_PKG_VERSION"))} }
                         }
                     }
                 }
             }
             main {
-                class: "flex-1 min-w-0 overflow-y-auto overflow-x-hidden overscroll-none",
+                class: main_class,
                 Outlet::<Route> {}
             }
         }
@@ -636,4 +648,9 @@ fn Connections() -> Element {
 #[component]
 fn SettingsPage() -> Element {
     rsx! { Settings {} }
+}
+
+#[component]
+fn NodesPage() -> Element {
+    rsx! { Nodes {} }
 }

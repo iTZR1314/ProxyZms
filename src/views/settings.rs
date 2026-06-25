@@ -90,15 +90,16 @@ pub fn Settings() -> Element {
     };
 
     rsx! {
-        div { class: "px-6 md:px-12 py-10 max-w-3xl",
-            header { class: "border-b-2 border-black pb-6",
+        // 满高列布局 + 垂直居中;不出滚动条
+        div { class: "h-full px-6 md:px-12 py-6 max-w-3xl mx-auto flex flex-col justify-center gap-6",
+            header { class: "border-b-2 border-black pb-4",
                 div { class: "text-[11px] uppercase tracking-[0.25em] text-neutral-500", "Configuration" }
-                h1 { class: "mt-3 text-5xl font-bold tracking-tighter leading-none", "设置" }
+                h1 { class: "mt-3 text-4xl font-bold tracking-tighter leading-none", "设置" }
             }
 
             // 订阅区块
-            section { class: "mt-10",
-                div { class: "text-[11px] uppercase tracking-[0.2em] text-[#e3000f] border-b border-black pb-2 mb-6", "01 / 订阅" }
+            section {
+                div { class: "text-[11px] uppercase tracking-[0.2em] text-[#e3000f] border-b border-black pb-2 mb-4", "01 / 订阅" }
                 Field {
                     label: "订阅地址(节点配置 YAML)",
                     value: config().subscription_url,
@@ -108,9 +109,9 @@ pub fn Settings() -> Element {
                         saved.set(false);
                     },
                 }
-                div { class: "mt-5 flex items-center gap-4",
+                div { class: "mt-4 flex items-center gap-4",
                     button {
-                        class: "px-6 py-2.5 bg-black text-white text-sm uppercase tracking-[0.15em] hover:bg-[#e3000f] disabled:opacity-40 transition-colors",
+                        class: "px-6 py-2 bg-black text-white text-sm uppercase tracking-[0.15em] hover:bg-[#e3000f] disabled:opacity-40 transition-colors",
                         disabled: updating(),
                         onclick: update_sub,
                         if updating() { "更新中…" } else { "更新订阅并重启" }
@@ -122,9 +123,9 @@ pub fn Settings() -> Element {
             }
 
             // 核心区块
-            section { class: "mt-12",
-                div { class: "text-[11px] uppercase tracking-[0.2em] text-[#e3000f] border-b border-black pb-2 mb-6", "02 / 核心" }
-                div { class: "space-y-6",
+            section {
+                div { class: "text-[11px] uppercase tracking-[0.2em] text-[#e3000f] border-b border-black pb-2 mb-4", "02 / 核心" }
+                div { class: "space-y-4",
                     Field {
                         label: "mihomo 可执行文件路径(留空使用内置下载)",
                         value: config().mihomo_path,
@@ -152,10 +153,9 @@ pub fn Settings() -> Element {
                             saved.set(false);
                         },
                     }
-                    // 删除并重新下载核心
-                    div { class: "flex items-center gap-4 pt-2",
+                    div { class: "flex items-center gap-4 pt-1",
                         button {
-                            class: "px-6 py-2.5 border border-[#e3000f] text-[#e3000f] text-sm uppercase tracking-[0.15em] hover:bg-[#e3000f] hover:text-white disabled:opacity-40 transition-colors",
+                            class: "px-6 py-2 border border-[#e3000f] text-[#e3000f] text-sm uppercase tracking-[0.15em] hover:bg-[#e3000f] hover:text-white disabled:opacity-40 transition-colors",
                             disabled: core_busy(),
                             onclick: redownload_core,
                             if core_busy() { "处理中…" } else { "删除并重新下载核心" }
@@ -167,9 +167,9 @@ pub fn Settings() -> Element {
                 }
             }
 
-            div { class: "mt-12 flex items-center gap-4",
+            div { class: "flex items-center gap-4",
                 button {
-                    class: "px-8 py-3 bg-black text-white text-sm uppercase tracking-[0.15em] hover:bg-[#e3000f] transition-colors",
+                    class: "px-8 py-2.5 bg-black text-white text-sm uppercase tracking-[0.15em] hover:bg-[#e3000f] transition-colors",
                     onclick: save,
                     "保存"
                 }

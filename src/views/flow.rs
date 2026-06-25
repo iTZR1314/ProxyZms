@@ -1,5 +1,5 @@
 //! 流量页(Flow,首页):扁平 Swiss 排版,平铺呈现运行状态 / IPv6 / TUN 开关 /
-//! 流量统计 / 代理节点选择。
+//! 流量统计。
 //!
 //! 本页同时承载首启引导(下载内核/订阅)与内核自动启动 —— 由原"状态页"合并而来。
 
@@ -8,7 +8,7 @@ use crate::config::AppConfig;
 use crate::format;
 use crate::mihomo::Controller;
 use crate::Telemetry;
-use crate::views::{ProxyGroups, TunControls};
+use crate::views::TunControls;
 use dioxus::prelude::*;
 use std::time::Duration;
 
@@ -214,22 +214,22 @@ pub fn Flow() -> Element {
     let ul_total = snap.as_ref().map(|s| s.upload_total).unwrap_or(0);
 
     rsx! {
-        // 扁平排版:状态 / TUN / 统计 / 节点选择 全部平铺进内容区(无地图、无浮卡)。
-        div { class: "px-6 md:px-12 py-10 max-w-4xl",
+        // 满高列布局:垂直居中;不出滚动条(外层 main 在非连接页用 overflow-hidden)。
+        div { class: "h-full px-6 md:px-12 py-6 max-w-4xl mx-auto flex flex-col justify-center gap-5",
 
-            // —— 状态头:左侧 = 运行状态 + IPv6,右侧 = TUN 开关(垂直居中) ——
-            header { class: "border-b-2 border-black pb-6 flex items-center justify-between gap-6",
+            // —— 状态头:运行 / IPv6 / TUN ——
+            header { class: "border-b-2 border-black pb-4 flex items-center justify-between gap-6",
                 div {
                     div { class: "text-[11px] uppercase tracking-[0.25em] text-neutral-500", "Mihomo · Status" }
                     div { class: "mt-3 flex items-center gap-3",
                         span {
                             class: if online() { "w-3.5 h-3.5 shrink-0 bg-[#e3000f]" } else { "w-3.5 h-3.5 shrink-0 border-2 border-black" },
                         }
-                        h1 { class: "text-4xl font-bold tracking-tighter leading-none",
+                        h1 { class: "text-3xl font-bold tracking-tighter leading-none",
                             if online() { "RUNNING" } else { "OFFLINE" }
                         }
                     }
-                    div { class: "mt-4",
+                    div { class: "mt-3",
                         match ipv6() {
                             None => rsx! {
                                 span { class: "flex items-center gap-2 text-xs uppercase tracking-[0.15em] text-neutral-400",
@@ -252,22 +252,21 @@ pub fn Flow() -> Element {
                         }
                     }
                 }
-                // 右侧:TUN 开关(header 是 flex items-center,自动垂直居中)
                 div { class: "shrink-0", TunControls {} }
             }
 
             if let Some(err) = error() {
-                div { class: "mt-6 border-l-4 border-[#e3000f] pl-4 py-2 text-sm text-neutral-700", "{err}" }
+                div { class: "border-l-4 border-[#e3000f] pl-4 py-2 text-sm text-neutral-700", "{err}" }
             }
 
-            // —— 实时流量条形图:48 格滚动,最后一格红色高亮 ——
+            // —— 实时流量条形图(.flow-chart 高度由 CSS 控制) ——
             {
                 let hist = history();
                 let max = hist.iter().copied().max().unwrap_or(0).max(1);
                 let last = hist.len().saturating_sub(1);
                 rsx! {
-                    div { class: "mt-8",
-                        div { class: "flex items-baseline justify-between pb-4",
+                    div {
+                        div { class: "flex items-baseline justify-between pb-3",
                             div { class: "text-[11px] uppercase tracking-[0.2em] text-neutral-500", "实时流量 / Throughput" }
                             div { class: "flex gap-4 tabular-nums",
                                 div { class: "text-sm font-bold tracking-tight text-[#e3000f]",
@@ -293,8 +292,8 @@ pub fn Flow() -> Element {
                 }
             }
 
-            // —— 统计网格:平铺,撑满内容宽度 ——
-            div { class: "mt-8 grid grid-cols-2 sm:grid-cols-3 border-t border-l border-black",
+            // —— 6 格统计:压缩 min-h + padding,字号 ——
+            div { class: "grid grid-cols-2 sm:grid-cols-3 border-t border-l border-black",
                 StatCell { label: "下载速度", value: format::speed(down_speed()), accent: true }
                 StatCell { label: "上传速度", value: format::speed(up_speed()), accent: true }
                 StatCell { label: "活动连接", value: conn_count.to_string(), accent: false }
@@ -302,9 +301,6 @@ pub fn Flow() -> Element {
                 StatCell { label: "下载总量", value: format::bytes(dl_total), accent: false }
                 StatCell { label: "上传总量", value: format::bytes(ul_total), accent: false }
             }
-
-            // —— 节点选择:直接平铺在下方 ——
-            div { class: "mt-12", ProxyGroups {} }
         }
     }
 }
@@ -312,15 +308,14 @@ pub fn Flow() -> Element {
 #[component]
 fn StatCell(label: String, value: String, accent: bool) -> Element {
     rsx! {
-        // 固定最小高度 + 值底部对齐:数字变长换行也不撑动格子,布局始终稳定
-        div { class: "border-r border-b border-black px-4 py-4 min-h-[96px] flex flex-col justify-between",
+        // 压缩版:min-h-[72px] + py-3 + text-base,适配满高列布局
+        div { class: "border-r border-b border-black px-3 py-3 min-h-[72px] flex flex-col justify-between",
             div { class: "text-[10px] uppercase tracking-[0.18em] text-neutral-500", "{label}" }
             div {
-                // tabular-nums:等宽数字,位数变化时宽度恒定,不左右抖动
                 class: if accent {
-                    "mt-2 text-lg font-bold tracking-tight tabular-nums leading-tight text-[#e3000f]"
+                    "mt-1 text-base font-bold tracking-tight tabular-nums leading-tight text-[#e3000f]"
                 } else {
-                    "mt-2 text-lg font-bold tracking-tight tabular-nums leading-tight"
+                    "mt-1 text-base font-bold tracking-tight tabular-nums leading-tight"
                 },
                 "{value}"
             }

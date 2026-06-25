@@ -6,15 +6,16 @@ use crate::Telemetry;
 use dioxus::prelude::*;
 use std::collections::{BTreeMap, HashSet};
 
-/// 代理节点选择:列出所有 Selector 策略组,点选切换 / 按组测速。
+/// 节点选择页:顶部模式切换 + 策略组标签栏 + 单组详情。
+/// 整页高度恒定,不出外层滚动条;某组节点过多时,仅芯片区静默滚动(`.no-scrollbar`)。
 #[component]
-pub fn ProxyGroups() -> Element {
+pub fn Nodes() -> Element {
     let config = use_context::<Signal<AppConfig>>();
     let tele = use_context::<Telemetry>();
-    // 正在测速的策略组名(用于显示转圈、禁用按钮)
-    let testing = use_signal(HashSet::<String>::new);
+    let mut testing = use_signal(HashSet::<String>::new);
+    // 当前激活的策略组名;为 None 或不再存在时回退到首个组
+    let mut active = use_signal(|| None::<String>);
 
-    // 数据来自 App 的集中遥测;动作后通过 tele.poke 触发立即刷新。
     let current_mode = tele
         .configs
         .read()
@@ -25,52 +26,58 @@ pub fn ProxyGroups() -> Element {
         Some(p) => p.proxies.clone(),
         None => BTreeMap::new(),
     };
-    // 隐藏内置的 GLOBAL 组(规则模式下无意义),只显示订阅里的可选组
+    // 隐藏内置 GLOBAL 组(规则模式下无意义),只展示订阅里的可选 Selector
     let groups: Vec<Proxy> = map
         .values()
         .filter(|p| p.is_selector() && p.name != "GLOBAL")
         .cloned()
         .collect();
 
-    rsx! {
-        section {
-            div { class: "text-[11px] uppercase tracking-[0.2em] text-[#e3000f] border-b-2 border-black pb-2 mb-6",
-                "代理节点 / Proxies"
-            }
+    // 选中组兜底:用户未选 / 选项已消失时,默认首个
+    let active_name: Option<String> = {
+        let cur = active.read().clone();
+        match cur {
+            Some(n) if groups.iter().any(|g| g.name == n) => Some(n),
+            _ => groups.first().map(|g| g.name.clone()),
+        }
+    };
+    let active_group: Option<Proxy> = active_name
+        .as_ref()
+        .and_then(|n| groups.iter().find(|g| &g.name == n).cloned());
 
-            // 模式与 TUN:两行对齐网格(代理模式与 TUN 正交,分开摆放)
-            div { class: "mb-8 space-y-3",
-                // 第一行:代理模式(规则 / 全局,互斥)
+    rsx! {
+        div { class: "h-full px-6 md:px-12 py-6 max-w-4xl mx-auto flex flex-col",
+            // ── 顶部:标题 + 模式切换 ──
+            header { class: "border-b-2 border-black pb-4 flex flex-wrap items-end justify-between gap-4 shrink-0",
+                div {
+                    div { class: "text-[11px] uppercase tracking-[0.25em] text-neutral-500", "Mihomo · Nodes" }
+                    h1 { class: "mt-3 text-4xl font-bold tracking-tighter leading-none", "节点" }
+                }
                 div { class: "flex items-center gap-2",
-                    span { class: "w-12 shrink-0 text-[11px] uppercase tracking-[0.18em] text-neutral-500", "模式" }
-                    {
-                        let modes = [("rule", "规则模式"), ("global", "全局模式")];
-                        rsx! {
-                            for (val, label) in modes {
-                                {
-                                    let active = current_mode == val;
-                                    rsx! {
-                                        button {
-                                            key: "{val}",
-                                            class: if active {
-                                                "px-4 py-1.5 text-sm bg-black text-white border border-black"
-                                            } else {
-                                                "px-4 py-1.5 text-sm border border-neutral-300 text-neutral-700 hover:border-black transition-colors"
-                                            },
-                                            onclick: move |_| {
-                                                let (url, secret) = {
-                                                    let c = config.read();
-                                                    (c.controller_url.clone(), c.secret.clone())
-                                                };
-                                                spawn(async move {
-                                                    let _ = ApiClient::new(url, secret).set_mode(val).await;
-                                                    let mut poke = tele.poke;
-                                                    poke.set(poke() + 1);
-                                                });
-                                            },
-                                            "{label}"
-                                        }
-                                    }
+                    span { class: "text-[11px] uppercase tracking-[0.18em] text-neutral-500", "模式" }
+                    for (val, label) in [("rule", "规则"), ("global", "全局")] {
+                        {
+                            let mode_active = current_mode == val;
+                            rsx! {
+                                button {
+                                    key: "{val}",
+                                    class: if mode_active {
+                                        "px-3 py-1.5 text-sm bg-black text-white border border-black"
+                                    } else {
+                                        "px-3 py-1.5 text-sm border border-neutral-300 text-neutral-700 hover:border-black transition-colors"
+                                    },
+                                    onclick: move |_| {
+                                        let (url, secret) = {
+                                            let c = config.read();
+                                            (c.controller_url.clone(), c.secret.clone())
+                                        };
+                                        spawn(async move {
+                                            let _ = ApiClient::new(url, secret).set_mode(val).await;
+                                            let mut poke = tele.poke;
+                                            poke.set(poke() + 1);
+                                        });
+                                    },
+                                    "{label}"
                                 }
                             }
                         }
@@ -78,56 +85,84 @@ pub fn ProxyGroups() -> Element {
                 }
             }
 
+            // ── 空状态 ──
             if groups.is_empty() {
-                p { class: "text-sm text-neutral-500", "暂无可选策略组(等待内核就绪,或订阅无 Selector 组)。" }
+                div { class: "flex-1 flex items-center justify-center",
+                    p { class: "text-sm text-neutral-500",
+                        "暂无可选策略组(等待内核就绪,或订阅无 Selector 组)。"
+                    }
+                }
             }
 
-            div { class: "space-y-8",
-                for group in groups.iter() {
-                    {
-                        let gname = group.name.clone();
-                        let gname_test = gname.clone();
-                        let is_testing = testing.read().contains(&gname);
-                        rsx! {
-                            div { key: "{group.name}", class: "border border-black",
-                                // 组标题:名称 + 类型 + 当前选择 + 测速
-                                div { class: "flex items-center justify-between gap-3 px-4 py-3 border-b border-neutral-200",
-                                    div { class: "flex items-baseline gap-3 min-w-0",
-                                        span { class: "shrink-0 font-bold tracking-tight", "{group.name}" }
-                                        span { class: "shrink-0 text-xs uppercase tracking-[0.12em] text-neutral-400", "{group.proxy_type}" }
-                                        span { class: "truncate text-sm text-[#e3000f]", "→ {group.now}" }
-                                    }
-                                    button {
-                                        class: "shrink-0 inline-flex items-center justify-center min-w-[3.25rem] px-3 py-1 text-[11px] uppercase tracking-[0.12em] border border-black hover:bg-black hover:text-white disabled:hover:bg-transparent disabled:hover:text-black transition-colors",
-                                        disabled: is_testing,
-                                        onclick: move |_| {
-                                            let g = gname_test.clone();
-                                            let (url, secret) = {
-                                                let c = config.read();
-                                                (c.controller_url.clone(), c.secret.clone())
-                                            };
-                                            let mut testing = testing;
-                                            testing.write().insert(g.clone());
-                                            spawn(async move {
-                                                let _ = ApiClient::new(url, secret).group_delay(&g).await;
-                                                let mut poke = tele.poke;
-                                                poke.set(poke() + 1);
-                                                testing.write().remove(&g);
-                                            });
-                                        },
-                                        if is_testing {
-                                            // 转圈圈:测速进行中
-                                            div { class: "w-3 h-3 border border-black border-t-transparent rounded-full animate-spin" }
-                                        } else {
-                                            "测速"
-                                        }
+            // ── 标签栏:每个策略组一颗 pill,wrap 进多行也只占顶部一小条 ──
+            if !groups.is_empty() {
+                div { class: "mt-6 flex flex-wrap gap-2 shrink-0",
+                    for g in groups.iter() {
+                        {
+                            let name = g.name.clone();
+                            let is_active = active_name.as_ref() == Some(&name);
+                            rsx! {
+                                button {
+                                    key: "{name}",
+                                    class: if is_active {
+                                        "px-3 py-1.5 text-sm bg-black text-white border border-black"
+                                    } else {
+                                        "px-3 py-1.5 text-sm border border-neutral-300 text-neutral-600 hover:border-black transition-colors"
+                                    },
+                                    onclick: move |_| { active.set(Some(name.clone())); },
+                                    "{g.name}"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ── 活动面板:组头(组名 + 当前节点 + 测速) + 芯片区(内部隐式滚动) ──
+            if let Some(group) = active_group {
+                {
+                    let gname = group.name.clone();
+                    let gname_test = gname.clone();
+                    let is_testing = testing.read().contains(&gname);
+                    rsx! {
+                        div { class: "mt-4 border border-black flex-1 min-h-0 flex flex-col",
+                            // 组头:固定不滚
+                            div { class: "flex items-center justify-between gap-3 px-4 py-3 border-b border-neutral-200 shrink-0",
+                                div { class: "flex items-baseline gap-3 min-w-0",
+                                    span { class: "shrink-0 font-bold tracking-tight", "{group.name}" }
+                                    span { class: "shrink-0 text-xs uppercase tracking-[0.12em] text-neutral-400", "{group.proxy_type}" }
+                                    span { class: "truncate text-sm text-[#e3000f]", "→ {group.now}" }
+                                }
+                                button {
+                                    class: "shrink-0 inline-flex items-center justify-center min-w-[3.25rem] px-3 py-1 text-[11px] uppercase tracking-[0.12em] border border-black hover:bg-black hover:text-white disabled:hover:bg-transparent disabled:hover:text-black transition-colors",
+                                    disabled: is_testing,
+                                    onclick: move |_| {
+                                        let g = gname_test.clone();
+                                        let (url, secret) = {
+                                            let c = config.read();
+                                            (c.controller_url.clone(), c.secret.clone())
+                                        };
+                                        testing.write().insert(g.clone());
+                                        spawn(async move {
+                                            let _ = ApiClient::new(url, secret).group_delay(&g).await;
+                                            let mut poke = tele.poke;
+                                            poke.set(poke() + 1);
+                                            testing.write().remove(&g);
+                                        });
+                                    },
+                                    if is_testing {
+                                        div { class: "w-3 h-3 border border-black border-t-transparent rounded-full animate-spin" }
+                                    } else {
+                                        "测速"
                                     }
                                 }
-                                // 成员芯片
-                                div { class: "p-4 flex flex-wrap gap-2",
+                            }
+                            // 芯片区:flex-1 + min-h-0 + 内部静默滚动(.no-scrollbar)
+                            div { class: "flex-1 min-h-0 overflow-y-auto no-scrollbar p-4",
+                                div { class: "flex flex-wrap gap-2",
                                     for member in group.all.iter() {
                                         {
-                                            let active = *member == group.now;
+                                            let chip_active = *member == group.now;
                                             let delay = map.get(member).and_then(|p| p.last_delay());
                                             let g = gname.clone();
                                             let m = member.clone();
@@ -135,7 +170,7 @@ pub fn ProxyGroups() -> Element {
                                                 button {
                                                     key: "{member}",
                                                     title: "{member}",
-                                                    class: if active {
+                                                    class: if chip_active {
                                                         "max-w-full px-3 py-1.5 text-sm bg-black text-white border border-black flex items-center gap-2"
                                                     } else {
                                                         "max-w-full px-3 py-1.5 text-sm border border-neutral-300 text-neutral-700 hover:border-black transition-colors flex items-center gap-2"
@@ -153,16 +188,13 @@ pub fn ProxyGroups() -> Element {
                                                             poke.set(poke() + 1);
                                                         });
                                                     },
-                                                    // 选中节点:红点标识
-                                                    if active {
+                                                    if chip_active {
                                                         span { class: "w-1.5 h-1.5 shrink-0 bg-[#e3000f]" }
                                                     }
-                                                    // 节点名:超长截断,避免撑宽芯片
                                                     span { class: "truncate max-w-[200px]", "{member}" }
-                                                    // 延迟徽章:固定宽度右对齐,数字变化不让芯片重排
                                                     if let Some(d) = delay {
                                                         span {
-                                                            class: if active {
+                                                            class: if chip_active {
                                                                 "shrink-0 min-w-[3.25rem] text-right text-[11px] tabular-nums text-neutral-300"
                                                             } else {
                                                                 "shrink-0 min-w-[3.25rem] text-right text-[11px] tabular-nums text-neutral-400"
@@ -278,3 +310,4 @@ pub fn TunControls() -> Element {
         }
     }
 }
+

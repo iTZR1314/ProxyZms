@@ -57,7 +57,7 @@ button {
     display: flex;
     align-items: flex-end;
     gap: 2px;
-    height: 76px;
+    height: 64px;
 }
 .flow-chart > .flow-bar {
     flex: 1;
@@ -82,3 +82,7 @@ button {
 ::-webkit-scrollbar-track {
     background: #ffffff;
 }
+
+/* 隐藏滚动条但保留滚轮/触控滚动:节点页芯片区等"内部静默滚动"场景 */
+.no-scrollbar { scrollbar-width: none; }
+.no-scrollbar::-webkit-scrollbar { display: none; }

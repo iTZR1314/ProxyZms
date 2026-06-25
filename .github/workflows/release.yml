@@ -73,7 +73,7 @@ jobs:
           set -euo pipefail
           mkdir -p artifacts
 
-          # dx bundle 直接产出以 Cargo [package].name 命名的 .app(已是「东莞锦荣纺织.app」),
+          # dx bundle 直接产出以 Cargo [package].name 命名的 .app(已是「VPN-JR.app」),
           # CFBundleName / CFBundleDisplayName / CFBundleExecutable 也一并对了 —— 无需后处理。
           app=$(find target -type d -name '*.app' -path '*bundle*' | head -n1)
           if [ -z "$app" ]; then echo "::error::未找到 .app 产物"; exit 1; fi
@@ -85,11 +85,11 @@ jobs:
           codesign --verify --deep --strict --verbose=2 "$app"
 
           # 自己用 hdiutil 打 dmg,放一个 Applications 软链做「拖入安装」。
-          # -volname 用品牌名,挂载 dmg 时 Finder 侧栏显示「东莞锦荣纺织」。
+          # -volname 用品牌名,挂载 dmg 时 Finder 侧栏显示「VPN JR」。
           staging=$(mktemp -d)
           cp -R "$app" "$staging/"
           ln -s /Applications "$staging/Applications"
-          hdiutil create -volname "东莞锦荣纺织" -srcfolder "$staging" -ov -format UDZO \
+          hdiutil create -volname "VPN JR" -srcfolder "$staging" -ov -format UDZO \
             "$PWD/artifacts/ProxyZms-${{ matrix.name }}.dmg"
           rm -rf "$staging"
           ls -la artifacts
