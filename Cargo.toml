@@ -25,6 +25,9 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 webbrowser = "1"
 base64 = "0.22"
 
+# BLE 锁屏:扫描周围蓝牙设备,目标设备远离即触发锁屏(见 src/ble_lock/)
+btleplug = "0.12"
+
 [target.'cfg(target_os = "macos")'.dependencies]
 objc = "0.2"
 

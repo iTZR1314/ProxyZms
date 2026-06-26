@@ -9,6 +9,7 @@
 
 use dioxus::prelude::*;
 
+mod ble_lock;
 mod bootstrap;
 mod config;
 mod format;
@@ -18,7 +19,7 @@ mod views;
 use config::AppConfig;
 use mihomo::Controller;
 use mihomo::types;
-use views::{ConnectionsView, Flow, Nodes, Settings};
+use views::{BleLock, ConnectionsView, Flow, Nodes, Settings};
 
 /// 全局共享的 TUN 开关状态:UI(TunControls)与系统托盘共用同一信号,保证一致。
 #[derive(Clone, Copy)]
@@ -52,6 +53,8 @@ enum Route {
     NodesPage {},
     #[route("/connections")]
     Connections {},
+    #[route("/ble-lock")]
+    BleLockPage {},
     #[route("/settings")]
     SettingsPage {},
 }
@@ -326,6 +329,21 @@ fn App() -> Element {
         history: Signal::new(vec![0u64; 48]),
     });
 
+    // 蓝牙锁屏:持久化配置 + 跨页共享的会话状态。supervisor 在下面 use_future 里跑,
+    // 即使用户切到流量 / 节点页,Watching 也持续。
+    let ble_config = use_context_provider(|| Signal::new(ble_lock::BleLockConfig::load()));
+    let ble = use_context_provider(|| ble_lock::BleSession {
+        state: Signal::new(ble_lock::BleState::Idle),
+        current_rssi: Signal::new(None),
+        current_status: Signal::new(None),
+        missing_count: Signal::new(0),
+        rssi_history: Signal::new(Vec::new()),
+        session_id: Signal::new(0),
+        cooldown_remaining_ms: Signal::new(0),
+        lock_cancel_requested: Signal::new(false),
+        error_msg: Signal::new(None),
+    });
+
     // 挂载后设置 Dock 图标(此时 NSApplication 已就绪)
     use_effect(|| {
         #[cfg(target_os = "macos")]
@@ -451,6 +469,12 @@ fn App() -> Element {
             }
             last_poke = poke();
         }
+    });
+
+    // 蓝牙锁屏 supervisor:跨页常驻,巡视 BleState,看到 Watching+新 session_id
+    // 就启动一次 run_watch_session;会话结束后(锁屏 / 用户停止)继续巡视。
+    use_future(move || async move {
+        ble_lock::supervisor(ble, ble_config).await;
     });
 
     // 系统托盘图标:随共享 TUN 状态切换 on/off
@@ -587,7 +611,7 @@ fn Shell() -> Element {
             aside { class: "w-52 shrink-0 border-r border-black/15 bg-white flex flex-col",
                 // 品牌区
                 div { class: "px-6 py-8 border-b-2 border-black",
-                    div { class: "text-2xl font-bold tracking-tighter leading-none", "VPN JR" }
+                    div { class: "text-2xl font-bold tracking-tighter leading-none", "东莞锦荣纺织" }
                     div { class: "mt-2 text-[10px] uppercase tracking-[0.25em] text-neutral-500",
                         "Mihomo Controller"
                     }
@@ -597,7 +621,8 @@ fn Shell() -> Element {
                     NavItem { to: Route::FlowPage {}, index: "01", label: "流量" }
                     NavItem { to: Route::NodesPage {}, index: "02", label: "节点" }
                     NavItem { to: Route::Connections {}, index: "03", label: "连接" }
-                    NavItem { to: Route::SettingsPage {}, index: "04", label: "设置" }
+                    NavItem { to: Route::BleLockPage {}, index: "04", label: "锁屏" }
+                    NavItem { to: Route::SettingsPage {}, index: "05", label: "设置" }
                 }
                 // 页脚:点击图标跳转作者主页
                 div { class: "mt-auto",
@@ -606,9 +631,9 @@ fn Shell() -> Element {
                         onclick: |_| {
                             let _ = webbrowser::open("https://zhoumaosen.top");
                         },
-                        img { src: fmr_logo_uri(), class: "w-16 h-16", alt: "付满瑞印" }
+                        img { src: fmr_logo_uri(), class: "w-16 h-16", alt: "dongguanjinrong" }
                         div { class: "text-center leading-tight",
-                            div { class: "text-xs uppercase tracking-[0.2em] text-neutral-600", "fumanrui" }
+                            div { class: "text-xs uppercase tracking-[0.2em] text-neutral-600", "DongGuanJinRong" }
                             div { class: "text-[10px] uppercase tracking-[0.2em] text-neutral-400", {concat!("2026 v", env!("CARGO_PKG_VERSION"))} }
                         }
                     }
@@ -653,4 +678,9 @@ fn SettingsPage() -> Element {
 #[component]
 fn NodesPage() -> Element {
     rsx! { Nodes {} }
+}
+
+#[component]
+fn BleLockPage() -> Element {
+    rsx! { BleLock {} }
 }
