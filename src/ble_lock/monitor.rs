@@ -34,6 +34,8 @@ pub struct MonitorConfig {
     pub lock_rssi: i16,
     /// 允许的连续"非 Nearby"次数上限,达到即置位 should_lock。
     pub missing_limit: u32,
+    /// Locked 后允许的连续"Nearby"次数上限,达到即 should_rearm。
+    pub rearm_limit: u32,
 }
 
 /// 监视器本体。持有配置 + 累积状态。
@@ -41,6 +43,7 @@ pub struct MonitorConfig {
 pub struct Monitor {
     config: MonitorConfig,
     missing_count: u32,
+    present_count: u32,
     should_lock: bool,
 }
 
@@ -49,6 +52,7 @@ impl Monitor {
         Self {
             config,
             missing_count: 0,
+            present_count: 0,
             should_lock: false,
         }
     }
@@ -57,19 +61,22 @@ impl Monitor {
     pub fn update(&mut self, rssi: Option<i16>) -> PhoneStatus {
         match rssi {
             Some(value) if value >= self.config.lock_rssi => {
-                // 信号够强 —— 重置耐心计数器。
+                // 信号够强 —— 重置耐心计数器,推进"已回归"计数。
                 self.missing_count = 0;
+                self.present_count = self.present_count.saturating_add(1);
                 PhoneStatus::Nearby
             }
             Some(_) => {
                 // 扫到了但太弱。
                 self.missing_count += 1;
+                self.present_count = 0;
                 self.check_lock();
                 PhoneStatus::WeakSignal
             }
             None => {
                 // 没扫到。Missing 与 WeakSignal 共用同一计数器,对"该不该锁"等价。
                 self.missing_count += 1;
+                self.present_count = 0;
                 self.check_lock();
                 PhoneStatus::Missing
             }
@@ -81,14 +88,21 @@ impl Monitor {
         self.should_lock
     }
 
+    /// 是否满足"信号回归"条件:必须先经历过锁屏(should_lock 置位),
+    /// 且随后连续 `rearm_limit` 拍都是 Nearby。
+    pub fn should_rearm(&self) -> bool {
+        self.should_lock && self.present_count >= self.config.rearm_limit
+    }
+
     pub fn missing_count(&self) -> u32 {
         self.missing_count
     }
 
-    /// 显式重置 —— 把 `missing_count` 清零、把锁存的 `should_lock` 复位。
-    /// 用于"用户取消锁屏并继续保护"。
+    /// 显式重置 —— 把所有累积计数与锁存全部清零。
+    /// 用于"用户取消锁屏并继续保护"或"信号回归后自动 re-arm"。
     pub fn reset(&mut self) {
         self.missing_count = 0;
+        self.present_count = 0;
         self.should_lock = false;
     }
 

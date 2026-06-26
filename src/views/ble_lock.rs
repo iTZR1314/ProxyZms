@@ -284,7 +284,7 @@ pub fn BleLock() -> Element {
                                     "重置"
                                 }
                                 span { class: "self-center text-[11px] uppercase tracking-[0.15em] text-neutral-500",
-                                    "已触发锁屏 · 点击重置可重新启用"
+                                    "已锁屏 · 信号回归 {cfg_snapshot.rearm_limit} 拍后自动续保护,或手动重置"
                                 }
                             },
                         }

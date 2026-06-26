@@ -22,6 +22,10 @@ pub struct BleLockConfig {
     /// 连续"非 Nearby"次数上限,达到即触发 should_lock。
     #[serde(default = "default_missing_limit")]
     pub missing_limit: u32,
+    /// Locked 状态下,连续"Nearby"次数达到该值即自动 re-arm 回 Watching。
+    /// 默认 3 ≈ 6 秒稳定回归,抗抖动。
+    #[serde(default = "default_rearm_limit")]
+    pub rearm_limit: u32,
 }
 
 fn default_lock_rssi() -> i16 {
@@ -30,6 +34,9 @@ fn default_lock_rssi() -> i16 {
 fn default_missing_limit() -> u32 {
     5
 }
+fn default_rearm_limit() -> u32 {
+    3
+}
 
 impl Default for BleLockConfig {
     fn default() -> Self {
@@ -37,6 +44,7 @@ impl Default for BleLockConfig {
             target: None,
             lock_rssi: default_lock_rssi(),
             missing_limit: default_missing_limit(),
+            rearm_limit: default_rearm_limit(),
         }
     }
 }

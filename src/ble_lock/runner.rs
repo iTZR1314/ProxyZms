@@ -53,6 +53,7 @@ pub async fn run_watch_session(
     let mut monitor = Monitor::new(MonitorConfig {
         lock_rssi: cfg.lock_rssi,
         missing_limit: cfg.missing_limit,
+        rearm_limit: cfg.rearm_limit,
     });
 
     // 3. 重置 UI 信号
@@ -96,10 +97,14 @@ pub async fn run_watch_session(
 
         // 热同步配置:UI 拖了阈值滑块就立刻应用。
         let live_cfg = { config.read().clone() };
-        if live_cfg.lock_rssi != cfg.lock_rssi || live_cfg.missing_limit != cfg.missing_limit {
+        if live_cfg.lock_rssi != cfg.lock_rssi
+            || live_cfg.missing_limit != cfg.missing_limit
+            || live_cfg.rearm_limit != cfg.rearm_limit
+        {
             monitor.set_config(MonitorConfig {
                 lock_rssi: live_cfg.lock_rssi,
                 missing_limit: live_cfg.missing_limit,
+                rearm_limit: live_cfg.rearm_limit,
             });
             cfg = live_cfg;
         }
@@ -159,9 +164,72 @@ pub async fn run_watch_session(
             // 冷静期过完没人取消 —— 真锁。
             ble.state.set(BleState::Locked);
             if let Err(e) = locker::lock().await {
+                // 锁屏失败:保留终止语义,避免假性"已锁"。
                 ble.error_msg.set(Some(format!("锁屏失败: {e}")));
+                return;
             }
-            return;
+
+            // ── 守望子循环:同 session 内继续吃 rx,等手机回归 ──
+            // Monitor 仍保留 should_lock 锁存(防止抖动重锁);present_count 在 update()
+            // 里随 Nearby 累加,达到 rearm_limit 即 should_rearm()=true。
+            let mut rearmed = false;
+            while let Some(scan_result) = rx.recv().await {
+                if ble.session_id.cloned() != my_session_id {
+                    return;
+                }
+                let rssi_input: Option<i16> = match scan_result {
+                    Ok(Some(info)) => {
+                        ble.error_msg.set(None);
+                        info.rssi
+                    }
+                    Ok(None) => {
+                        ble.error_msg.set(None);
+                        None
+                    }
+                    Err(e) => {
+                        ble.error_msg.set(Some(format!("{e}")));
+                        continue;
+                    }
+                };
+
+                // 守望期间同样支持配置热同步(用户可能边等回归边调阈值)。
+                let live_cfg = { config.read().clone() };
+                if live_cfg.lock_rssi != cfg.lock_rssi
+                    || live_cfg.missing_limit != cfg.missing_limit
+                    || live_cfg.rearm_limit != cfg.rearm_limit
+                {
+                    monitor.set_config(MonitorConfig {
+                        lock_rssi: live_cfg.lock_rssi,
+                        missing_limit: live_cfg.missing_limit,
+                        rearm_limit: live_cfg.rearm_limit,
+                    });
+                    cfg = live_cfg;
+                }
+
+                let status = monitor.update(rssi_input);
+                ble.current_rssi.set(rssi_input);
+                ble.current_status.set(Some(status));
+                ble.rssi_history.with_mut(|h| {
+                    if h.len() >= RSSI_HISTORY_LEN {
+                        h.remove(0);
+                    }
+                    h.push(rssi_input);
+                });
+
+                if monitor.should_rearm() {
+                    monitor.reset();
+                    ble.missing_count.set(0);
+                    ble.state.set(BleState::Watching);
+                    rearmed = true;
+                    break;
+                }
+            }
+
+            // scanner 死了(rx 关) 且没 rearm —— 整条会话结束。
+            if !rearmed {
+                return;
+            }
+            continue;
         }
     }
 }
