@@ -79,6 +79,11 @@ jobs:
           if [ -z "$app" ]; then echo "::error::未找到 .app 产物"; exit 1; fi
           echo "found app: $app"
 
+          # 注入 BLE 权限描述键:macOS 11+ 第一次访问 CoreBluetooth 必须有
+          # NSBluetoothAlwaysUsageDescription 否则 SIGABRT。dx 默认不写这个,
+          # 必须在 codesign **之前**注入(签名后改 Info.plist 会破坏签名)。
+          ./scripts/inject-macos-info-plist.sh "$app"
+
           # ad-hoc(-)深度签名:Apple Silicon 上没有任何签名会「已损坏打不开」。
           # 这不是 Apple 公证,Gatekeeper 仍会提示——用户首次打开需右键打开或解除隔离(见 README)。
           codesign --force --deep --sign - "$app"
