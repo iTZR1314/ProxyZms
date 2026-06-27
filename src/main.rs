@@ -73,7 +73,7 @@ fn fmr_logo_uri() -> &'static str {
     static URI: OnceLock<String> = OnceLock::new();
     URI.get_or_init(|| {
         let b64 = base64::engine::general_purpose::STANDARD
-            .encode(include_bytes!("../assets/fmr-logo.png"));
+            .encode(include_bytes!("../assets/dongguanjinrong.png"));
         format!("data:image/png;base64,{b64}")
     })
 }
