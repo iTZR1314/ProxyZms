@@ -96,8 +96,8 @@ pub fn Settings() -> Element {
     };
 
     rsx! {
-        // 满高列布局 + 垂直居中;不出滚动条
-        div { class: "h-full px-6 md:px-12 py-6 max-w-3xl mx-auto flex flex-col justify-center gap-6",
+        // 满高列布局 + 内容溢出时纵向滚动(03/系统 区块加入后内容可能超过窗口高度)
+        div { class: "h-full px-6 md:px-12 py-6 max-w-3xl mx-auto flex flex-col gap-6 overflow-y-auto",
             header { class: "border-b-2 border-black pb-4",
                 div { class: "text-[11px] uppercase tracking-[0.25em] text-neutral-500", "Configuration" }
                 h1 { class: "mt-3 text-4xl font-bold tracking-tighter leading-none", "设置" }
