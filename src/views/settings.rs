@@ -1,3 +1,5 @@
+use crate::autostart;
+use crate::ble_lock::BleLockConfig;
 use crate::bootstrap;
 use crate::config::AppConfig;
 use crate::format;
@@ -7,7 +9,11 @@ use dioxus::prelude::*;
 #[component]
 pub fn Settings() -> Element {
     let mut config = use_context::<Signal<AppConfig>>();
+    let mut ble_config = use_context::<Signal<BleLockConfig>>();
     let controller = use_context::<Controller>();
+    let mut autostart_enabled = use_signal(autostart::is_enabled);
+    let mut autostart_error = use_signal(|| None::<String>);
+    let autostart_supported = autostart::is_supported();
     let mut saved = use_signal(|| false);
     let mut sub_status = use_signal(|| None::<String>);
     let mut updating = use_signal(|| false);
@@ -162,6 +168,65 @@ pub fn Settings() -> Element {
                         }
                         if let Some(s) = core_status() {
                             span { class: "text-xs text-neutral-600", "{s}" }
+                        }
+                    }
+                }
+            }
+
+            // 系统区块:开机启动 + BLE 启动时自动启用保护
+            section {
+                div { class: "text-[11px] uppercase tracking-[0.2em] text-[#e3000f] border-b border-black pb-2 mb-4", "03 / 系统" }
+                div { class: "space-y-4",
+                    // 开机启动
+                    label { class: "flex items-start gap-3 cursor-pointer",
+                        input {
+                            r#type: "checkbox",
+                            class: "mt-1 w-4 h-4 accent-[#e3000f] cursor-pointer disabled:cursor-not-allowed",
+                            checked: autostart_enabled(),
+                            disabled: !autostart_supported,
+                            onchange: move |evt| {
+                                let want = evt.value().parse::<bool>().unwrap_or(false);
+                                match autostart::set_enabled(want) {
+                                    Ok(()) => {
+                                        autostart_enabled.set(autostart::is_enabled());
+                                        autostart_error.set(None);
+                                    }
+                                    Err(e) => autostart_error.set(Some(e)),
+                                }
+                            },
+                        }
+                        div { class: "flex-1",
+                            div { class: "text-sm font-medium", "开机启动 ProxyZms" }
+                            div { class: "mt-1 text-xs text-neutral-500 leading-relaxed",
+                                if autostart_supported {
+                                    "登录系统后自动拉起。macOS 写入 LaunchAgent;Windows 写入注册表 Run 项。"
+                                } else {
+                                    "当前平台不支持此选项。"
+                                }
+                            }
+                            if let Some(e) = autostart_error() {
+                                div { class: "mt-1 text-xs text-[#e3000f]", "{e}" }
+                            }
+                        }
+                    }
+
+                    // BLE 启动时自动启用保护
+                    label { class: "flex items-start gap-3 cursor-pointer",
+                        input {
+                            r#type: "checkbox",
+                            class: "mt-1 w-4 h-4 accent-[#e3000f] cursor-pointer",
+                            checked: ble_config().auto_protect_on_launch,
+                            onchange: move |evt| {
+                                let want = evt.value().parse::<bool>().unwrap_or(false);
+                                ble_config.write().auto_protect_on_launch = want;
+                                let _ = ble_config.read().save();
+                            },
+                        }
+                        div { class: "flex-1",
+                            div { class: "text-sm font-medium", "打开应用时自动启用蓝牙锁屏保护" }
+                            div { class: "mt-1 text-xs text-neutral-500 leading-relaxed",
+                                "需先在 04 / 蓝牙锁屏 页绑定设备。启动后做一次 3 秒 probe,扫到目标且 RSSI 达阈值则直接进入保护中。"
+                            }
                         }
                     }
                 }

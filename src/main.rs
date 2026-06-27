@@ -9,6 +9,7 @@
 
 use dioxus::prelude::*;
 
+mod autostart;
 mod ble_lock;
 mod bootstrap;
 mod config;
@@ -338,6 +339,7 @@ fn App() -> Element {
         current_status: Signal::new(None),
         missing_count: Signal::new(0),
         rssi_history: Signal::new(Vec::new()),
+        armed: Signal::new(false),
         session_id: Signal::new(0),
         cooldown_remaining_ms: Signal::new(0),
         lock_cancel_requested: Signal::new(false),
@@ -475,6 +477,12 @@ fn App() -> Element {
     // 就启动一次 run_watch_session;会话结束后(锁屏 / 用户停止)继续巡视。
     use_future(move || async move {
         ble_lock::supervisor(ble, ble_config).await;
+    });
+
+    // 启动 probe:已绑定 + 启用自动保护 + 手机在阈值内 → 自动翻到 Watching,
+    // 让 supervisor 接管。失败 / 不在范围内都静默,不打断"开 app"体验。
+    use_future(move || async move {
+        ble_lock::try_autostart(ble, ble_config).await;
     });
 
     // 系统托盘图标:随共享 TUN 状态切换 on/off

@@ -26,6 +26,10 @@ pub struct BleLockConfig {
     /// 默认 3 ≈ 6 秒稳定回归,抗抖动。
     #[serde(default = "default_rearm_limit")]
     pub rearm_limit: u32,
+    /// 打开应用时,若已绑定设备且手机在阈值内,自动开启保护。
+    /// 默认 true —— 用户的初衷一般就是"不想每次手动点启动"。
+    #[serde(default = "default_auto_protect_on_launch")]
+    pub auto_protect_on_launch: bool,
 }
 
 fn default_lock_rssi() -> i16 {
@@ -37,6 +41,9 @@ fn default_missing_limit() -> u32 {
 fn default_rearm_limit() -> u32 {
     3
 }
+fn default_auto_protect_on_launch() -> bool {
+    true
+}
 
 impl Default for BleLockConfig {
     fn default() -> Self {
@@ -45,6 +52,7 @@ impl Default for BleLockConfig {
             lock_rssi: default_lock_rssi(),
             missing_limit: default_missing_limit(),
             rearm_limit: default_rearm_limit(),
+            auto_protect_on_launch: default_auto_protect_on_launch(),
         }
     }
 }

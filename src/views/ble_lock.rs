@@ -37,7 +37,11 @@ pub fn BleLock() -> Element {
 
     let cfg_snapshot = config();
     let state = ble.state.cloned();
+    let armed = ble.armed.cloned();
     let is_protecting = state != BleState::Idle;
+    // "Watching 但还没扫到手机一次":UI 要把状态文案、丢失计数都用占位符代替,
+    // 否则用户看到 0/5 会误以为正在倒计时锁屏。
+    let waiting_first_sight = state == BleState::Watching && !armed;
 
     // ─────────────────────────────────────────────────────────────────────
     // 状态机动作
@@ -157,8 +161,12 @@ pub fn BleLock() -> Element {
                     div { class: "text-[10px] uppercase tracking-[0.25em] text-neutral-400", "状态" }
                     div {
                         class: "mt-1 text-lg font-bold tracking-tighter",
-                        class: if state == BleState::Idle { "text-neutral-500" } else { "text-[#e3000f]" },
-                        "{state.label()}"
+                        class: if state == BleState::Idle { "text-neutral-500" } else if waiting_first_sight { "text-neutral-700" } else { "text-[#e3000f]" },
+                        if waiting_first_sight {
+                            "保护中 · 待定位"
+                        } else {
+                            "{state.label()}"
+                        }
                     }
                 }
             }
@@ -298,6 +306,11 @@ pub fn BleLock() -> Element {
                     div { class: "text-[11px] uppercase tracking-[0.2em] text-[#e3000f] border-b border-black pb-2 mb-4",
                         "04 / 实时状态"
                     }
+                    if waiting_first_sight {
+                        div { class: "mb-4 px-4 py-3 border-l-4 border-neutral-400 bg-neutral-50 text-[12px] text-neutral-700 leading-relaxed",
+                            "未扫到手机。首次定位前不会进入锁屏倒计时,带手机进入范围即自动开始保护。"
+                        }
+                    }
                     div { class: "grid grid-cols-3 gap-6 mb-5",
                         div {
                             div { class: "text-[10px] uppercase tracking-[0.2em] text-neutral-500", "RSSI" }
@@ -316,18 +329,26 @@ pub fn BleLock() -> Element {
                         div {
                             div { class: "text-[10px] uppercase tracking-[0.2em] text-neutral-500", "状态" }
                             div { class: "mt-1 text-3xl font-bold tracking-tighter leading-none",
-                                {
-                                    ble.current_status
-                                        .cloned()
-                                        .map(|s| s.label().to_string())
-                                        .unwrap_or_else(|| "—".into())
+                                if waiting_first_sight {
+                                    "待定位"
+                                } else {
+                                    {
+                                        ble.current_status
+                                            .cloned()
+                                            .map(|s| s.label().to_string())
+                                            .unwrap_or_else(|| "—".into())
+                                    }
                                 }
                             }
                         }
                         div {
                             div { class: "text-[10px] uppercase tracking-[0.2em] text-neutral-500", "丢失计数" }
                             div { class: "mt-1 text-3xl font-bold tabular-nums tracking-tighter leading-none",
-                                "{ble.missing_count.cloned()}"
+                                if waiting_first_sight {
+                                    "—"
+                                } else {
+                                    "{ble.missing_count.cloned()}"
+                                }
                                 span { class: "ml-1 text-[10px] uppercase tracking-[0.2em] text-neutral-400 font-normal",
                                     "/ {cfg_snapshot.missing_limit}"
                                 }

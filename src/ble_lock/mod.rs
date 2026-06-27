@@ -20,7 +20,7 @@ use dioxus::prelude::*;
 pub use config::BleLockConfig;
 pub use device::DeviceInfo;
 pub use monitor::PhoneStatus;
-pub use runner::{supervisor, RSSI_HISTORY_LEN};
+pub use runner::{supervisor, try_autostart, RSSI_HISTORY_LEN};
 pub use scanner::{Scanner, ScannerError};
 
 /// BLE 锁屏的核心模式。绑定信息(`target`)从 [`BleLockConfig`] 读取,**不**在此重复。
@@ -60,6 +60,9 @@ pub struct BleSession {
     pub current_status: Signal<Option<PhoneStatus>>,
     pub missing_count: Signal<u32>,
     pub rssi_history: Signal<Vec<Option<i16>>>,
+    /// Monitor 的 armed 镜像:Watching 进入后是否已扫到过至少一次 Nearby。
+    /// UI 用它显示"待定位手机"占位文案,避免误以为正在倒计时锁屏。
+    pub armed: Signal<bool>,
 
     /// 会话号:每次进入 Watching 时 +1,后台任务用它做协作式取消。
     pub session_id: Signal<u64>,

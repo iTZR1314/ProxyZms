@@ -28,6 +28,54 @@ pub const WATCH_SCAN_WINDOW: Duration = Duration::from_millis(1500);
 pub const RSSI_HISTORY_LEN: usize = 30;
 /// 锁屏前的冷静期。Monitor 判定 should_lock 后,UI 给用户撤回的时间窗口。
 pub const LOCK_COOLDOWN: Duration = Duration::from_secs(3);
+/// App 启动 probe 的扫描窗口。比 WATCH_SCAN_WINDOW 长,争取一次扫到目标设备的广播。
+pub const AUTOSTART_PROBE_WINDOW: Duration = Duration::from_secs(3);
+
+/// App 启动时的一次性 probe:已绑定 + 启用自动保护 + 当前 Idle + 扫到目标
+/// 且 RSSI 达阈值,才把状态翻到 Watching;否则静默退出,不污染用户体验。
+///
+/// 与 [`supervisor`] 关系:probe 翻到 Watching 后,supervisor 在下一拍 (≤200ms) 接管,
+/// `run_watch_session` 自己再创建 scanner —— probe 的 scanner 已经被 drop。
+/// 极小概率与同时手动启动产生 adapter 调度交错,被 supervisor 的下一拍自然吸收。
+pub async fn try_autostart(mut ble: BleSession, config: Signal<BleLockConfig>) {
+    let cfg = { config.read().clone() };
+    if !cfg.auto_protect_on_launch {
+        return;
+    }
+    let Some(target) = cfg.target.clone() else {
+        return;
+    };
+    if ble.state.cloned() != BleState::Idle {
+        return;
+    }
+
+    // best-effort:任一步失败都静默返回,probe 不该把"开 app"搞坏。
+    let Ok(scanner) = Scanner::new().await else {
+        return;
+    };
+    let matcher = DeviceMatcher::Name(target);
+    let Ok(Some(info)) = scanner.find(&matcher, AUTOSTART_PROBE_WINDOW).await else {
+        return;
+    };
+    let Some(rssi) = info.rssi else {
+        return;
+    };
+    if rssi < cfg.lock_rssi {
+        return;
+    }
+
+    // probe 过程中(3s)用户可能手动启动 / 取消绑定 —— 再确认一次。
+    if ble.state.cloned() != BleState::Idle {
+        return;
+    }
+    if config.read().target.is_none() {
+        return;
+    }
+
+    ble.session_id.with_mut(|s| *s += 1);
+    ble.error_msg.set(None);
+    ble.state.set(BleState::Watching);
+}
 
 /// 跑一次完整保护会话。从 BleState=Watching 开始,结束时 BleState 已经
 /// 切到 Locked、Idle 或 Watching(被取消锁屏后又继续)之一。
@@ -60,6 +108,7 @@ pub async fn run_watch_session(
     ble.current_rssi.set(None);
     ble.current_status.set(None);
     ble.missing_count.set(0);
+    ble.armed.set(false);
     ble.rssi_history.set(Vec::new());
     ble.error_msg.set(None);
 
@@ -116,6 +165,7 @@ pub async fn run_watch_session(
         ble.current_rssi.set(rssi_input);
         ble.current_status.set(Some(status));
         ble.missing_count.set(monitor.missing_count());
+        ble.armed.set(monitor.is_armed());
 
         ble.rssi_history.with_mut(|h| {
             if h.len() >= RSSI_HISTORY_LEN {
@@ -152,10 +202,12 @@ pub async fn run_watch_session(
 
             if cancelled {
                 // 用户取消 —— Monitor 完全重置,UI 回到 Watching。
+                // armed 也清零:重新进入"待定位手机"状态,需要再被 Nearby 看到一次才会计数。
                 monitor.reset();
                 ble.current_rssi.set(None);
                 ble.current_status.set(None);
                 ble.missing_count.set(0);
+                ble.armed.set(false);
                 ble.lock_cancel_requested.set(false);
                 ble.state.set(BleState::Watching);
                 continue;
@@ -209,6 +261,7 @@ pub async fn run_watch_session(
                 let status = monitor.update(rssi_input);
                 ble.current_rssi.set(rssi_input);
                 ble.current_status.set(Some(status));
+                ble.armed.set(monitor.is_armed());
                 ble.rssi_history.with_mut(|h| {
                     if h.len() >= RSSI_HISTORY_LEN {
                         h.remove(0);
@@ -217,8 +270,11 @@ pub async fn run_watch_session(
                 });
 
                 if monitor.should_rearm() {
-                    monitor.reset();
+                    // 走 rearm() 而非 reset():刚刚连续 N 次 Nearby,armed 保持 true,
+                    // 回到 Watching 后无 2s "待定位手机" 闪烁,直接正常工作。
+                    monitor.rearm();
                     ble.missing_count.set(0);
+                    ble.armed.set(true);
                     ble.state.set(BleState::Watching);
                     rearmed = true;
                     break;

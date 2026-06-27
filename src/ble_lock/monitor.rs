@@ -44,6 +44,10 @@ pub struct Monitor {
     config: MonitorConfig,
     missing_count: u32,
     present_count: u32,
+    /// "Watching 进入后是否至少扫到过一次 Nearby"。
+    /// 未 armed 时 Weak/Missing 都不入 missing_count、不会触发 should_lock ——
+    /// 防止"手机不在身边时启动保护,瞬间被自己锁出去"。
+    armed: bool,
     should_lock: bool,
 }
 
@@ -53,6 +57,7 @@ impl Monitor {
             config,
             missing_count: 0,
             present_count: 0,
+            armed: false,
             should_lock: false,
         }
     }
@@ -61,23 +66,28 @@ impl Monitor {
     pub fn update(&mut self, rssi: Option<i16>) -> PhoneStatus {
         match rssi {
             Some(value) if value >= self.config.lock_rssi => {
-                // 信号够强 —— 重置耐心计数器,推进"已回归"计数。
+                // 信号够强 —— 锁定"已 armed",清耐心计数器、推进"已回归"计数。
+                self.armed = true;
                 self.missing_count = 0;
                 self.present_count = self.present_count.saturating_add(1);
                 PhoneStatus::Nearby
             }
             Some(_) => {
-                // 扫到了但太弱。
-                self.missing_count += 1;
+                // 扫到了但太弱:只有 armed 状态下才计入 missing。
+                if self.armed {
+                    self.missing_count += 1;
+                    self.check_lock();
+                }
                 self.present_count = 0;
-                self.check_lock();
                 PhoneStatus::WeakSignal
             }
             None => {
-                // 没扫到。Missing 与 WeakSignal 共用同一计数器,对"该不该锁"等价。
-                self.missing_count += 1;
+                // 没扫到:同 WeakSignal 处理。armed 之前的 Missing 不计入。
+                if self.armed {
+                    self.missing_count += 1;
+                    self.check_lock();
+                }
                 self.present_count = 0;
-                self.check_lock();
                 PhoneStatus::Missing
             }
         }
@@ -98,12 +108,28 @@ impl Monitor {
         self.missing_count
     }
 
-    /// 显式重置 —— 把所有累积计数与锁存全部清零。
-    /// 用于"用户取消锁屏并继续保护"或"信号回归后自动 re-arm"。
+    /// 是否"已见过手机一次"。Watching 进入后到首次 Nearby 之间为 false,
+    /// 此期间 Monitor 不会触发 should_lock。
+    pub fn is_armed(&self) -> bool {
+        self.armed
+    }
+
+    /// 显式完全重置 —— 计数 + armed + 锁存全清。用于"用户取消锁屏并继续保护"。
+    /// 取消后需要重新被看到一次才会重新进入计数,语义合理(刚刚正是因为没看到才差点锁屏)。
     pub fn reset(&mut self) {
         self.missing_count = 0;
         self.present_count = 0;
+        self.armed = false;
         self.should_lock = false;
+    }
+
+    /// **信号回归专用** —— 清计数与 should_lock 锁存,但 `armed` 保持 true。
+    /// 走这条路时刚刚连续 `rearm_limit` 次 Nearby,身份已确认,无须重新 arm。
+    pub fn rearm(&mut self) {
+        self.missing_count = 0;
+        self.present_count = 0;
+        self.should_lock = false;
+        // armed 故意不动:保持 true,Watching 立即恢复正常计数
     }
 
     /// **热替换配置** —— 不重置计数,但立即重跑一次锁屏判定。
