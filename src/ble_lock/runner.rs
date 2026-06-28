@@ -17,6 +17,7 @@ use super::config::BleLockConfig;
 use super::device::DeviceMatcher;
 use super::locker;
 use super::monitor::{Monitor, MonitorConfig};
+use super::notifier;
 use super::scanner::Scanner;
 use super::{BleSession, BleState};
 
@@ -215,6 +216,14 @@ pub async fn run_watch_session(
 
             // 冷静期过完没人取消 —— 真锁。
             ble.state.set(BleState::Locked);
+
+            // best-effort 推送:无论成败都继续锁屏。3s 超时由 notifier 自己封顶,
+            // 不会拖死主线;读 url 时不要 hold 信号跨 await。
+            let bark_url = { config.read().bark_url.clone() };
+            if let Err(e) = notifier::notify(&bark_url).await {
+                ble.error_msg.set(Some(format!("推送失败: {e}")));
+            }
+
             if let Err(e) = locker::lock().await {
                 // 锁屏失败:保留终止语义,避免假性"已锁"。
                 ble.error_msg.set(Some(format!("锁屏失败: {e}")));

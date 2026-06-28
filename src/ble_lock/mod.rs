@@ -12,6 +12,7 @@ pub mod config;
 pub mod device;
 pub mod locker;
 pub mod monitor;
+pub mod notifier;
 pub mod runner;
 pub mod scanner;
 

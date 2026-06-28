@@ -1,5 +1,5 @@
 use crate::autostart;
-use crate::ble_lock::BleLockConfig;
+use crate::ble_lock::{notifier, BleLockConfig};
 use crate::bootstrap;
 use crate::config::AppConfig;
 use crate::format;
@@ -19,6 +19,8 @@ pub fn Settings() -> Element {
     let mut updating = use_signal(|| false);
     let mut core_status = use_signal(|| None::<String>);
     let mut core_busy = use_signal(|| false);
+    let mut bark_status = use_signal(|| None::<String>);
+    let mut bark_busy = use_signal(|| false);
 
     // 删除现有 mihomo 二进制并重新下载,然后重启内核
     let redownload_core = {
@@ -92,6 +94,28 @@ pub fn Settings() -> Element {
                 Err(e) => sub_status.set(Some(e)),
             }
             updating.set(false);
+        });
+    };
+
+    // 手动触发一次 Bark 推送 —— 让用户落盘前先验证 URL 是否好用。
+    let test_bark = move |_| {
+        if bark_busy() {
+            return;
+        }
+        let url = ble_config().bark_url.trim().to_string();
+        if url.is_empty() {
+            bark_status.set(Some("请先填写推送地址".to_string()));
+            return;
+        }
+        bark_busy.set(true);
+        bark_status.set(Some("推送中…".to_string()));
+        spawn(async move {
+            let msg = match notifier::notify(&url).await {
+                Ok(()) => "已推送 ✓".to_string(),
+                Err(e) => format!("失败:{e}"),
+            };
+            bark_status.set(Some(msg));
+            bark_busy.set(false);
         });
     };
 
@@ -229,6 +253,34 @@ pub fn Settings() -> Element {
                             }
                         }
                     }
+                }
+            }
+
+            // 推送通知:Bark(iOS)— 锁屏前 best-effort 推送
+            section {
+                div { class: "text-[11px] uppercase tracking-[0.2em] text-[#e3000f] border-b border-black pb-2 mb-4", "04 / 推送通知" }
+                Field {
+                    label: "Bark 推送地址(锁屏前 best-effort GET,空 = 禁用)",
+                    value: ble_config().bark_url,
+                    placeholder: "https://api.day.app/<key>/标题/正文",
+                    oninput: move |v| {
+                        ble_config.write().bark_url = v;
+                        let _ = ble_config.read().save();
+                    },
+                }
+                div { class: "mt-4 flex items-center gap-4",
+                    button {
+                        class: "px-6 py-2 bg-black text-white text-sm uppercase tracking-[0.15em] hover:bg-[#e3000f] disabled:opacity-40 transition-colors",
+                        disabled: bark_busy(),
+                        onclick: test_bark,
+                        if bark_busy() { "推送中…" } else { "测试推送" }
+                    }
+                    if let Some(s) = bark_status() {
+                        span { class: "text-xs uppercase tracking-[0.12em] text-neutral-600", "{s}" }
+                    }
+                }
+                div { class: "mt-3 text-xs text-neutral-500 leading-relaxed",
+                    "iOS App「Bark」可在 设置 → 服务器 找到你的专属地址。锁屏前会 GET 一次此 URL,3 秒超时;任何失败都不阻止锁屏。"
                 }
             }
 

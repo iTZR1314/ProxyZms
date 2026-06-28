@@ -30,6 +30,11 @@ pub struct BleLockConfig {
     /// 默认 true —— 用户的初衷一般就是"不想每次手动点启动"。
     #[serde(default = "default_auto_protect_on_launch")]
     pub auto_protect_on_launch: bool,
+    /// Bark(iOS 推送)URL,完整地址。空 = 禁用。锁屏前会异步 GET 一次,
+    /// 无论成败都继续锁屏 —— 通知是 best-effort,锁屏才是主线。
+    /// 示例:`https://api.day.app/<key>/标题/正文`
+    #[serde(default)]
+    pub bark_url: String,
 }
 
 fn default_lock_rssi() -> i16 {
@@ -53,6 +58,7 @@ impl Default for BleLockConfig {
             missing_limit: default_missing_limit(),
             rearm_limit: default_rearm_limit(),
             auto_protect_on_launch: default_auto_protect_on_launch(),
+            bark_url: String::new(),
         }
     }
 }
