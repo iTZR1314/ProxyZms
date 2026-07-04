@@ -40,7 +40,7 @@ impl AppConfig {
     pub fn load() -> Self {
         config_path()
             .and_then(|p| std::fs::read_to_string(p).ok())
-            .and_then(|s| serde_json::from_str(&s).ok())
+            .and_then(|s| serde_json::from_str::<Self>(&s).ok())
             .unwrap_or_default()
     }
 

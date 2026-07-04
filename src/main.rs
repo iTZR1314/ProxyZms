@@ -179,6 +179,9 @@ fn main() {
             .with_window(window)
             // 关闭窗口时隐藏而非退出,程序留在后台(托盘)
             .with_close_behaviour(WindowCloseBehaviour::WindowHides)
+            // 关闭 Dioxus 内置的"左击托盘自动显示窗口",统一交给下方自定义事件处理,
+            // 避免与 macOS 状态栏按钮/menu 的原生行为打架。
+            .with_tray_icon_show_window_on_click(false)
             // 初始背景设为白色,避免首帧黑/透明闪一下
             .with_background_color((255, 255, 255, 255))
             .with_custom_head(custom_head);
@@ -317,6 +320,7 @@ fn App() -> Element {
     let config = use_context_provider(|| Signal::new(AppConfig::load()));
     use_context_provider(Controller::default);
     let mut tun_state = use_context_provider(|| TunState(Signal::new(false))).0;
+    let mut window_focused = use_signal(|| true);
 
     // 集中遥测:所有视图共享读取,避免每个页面各自重复轮询
     let tele = use_context_provider(|| Telemetry {
@@ -508,6 +512,10 @@ fn App() -> Element {
         use_effect(move || {
             let on = tun_state();
             if let Some(t) = tray.as_ref() {
+                #[cfg(target_os = "macos")]
+                // 再显式关一次"左击弹菜单"。某些 macOS 版本/状态栏实现下,
+                // 仅依赖 builder 默认值仍可能表现成左击先弹菜单。
+                t.set_show_menu_on_left_click(false);
                 let icon = if on {
                     tray_icon_from_png(ON_PNG)
                 } else {
@@ -528,27 +536,41 @@ fn App() -> Element {
 
         let win = use_window();
         use_wry_event_handler(move |event, _| {
-            if let Event::WindowEvent {
-                event: WindowEvent::CloseRequested,
-                ..
-            } = event
-            {
-                #[cfg(target_os = "macos")]
-                set_dock_visible(false);
+            if let Event::WindowEvent { event, .. } = event {
+                match event {
+                    WindowEvent::CloseRequested => {
+                        #[cfg(target_os = "macos")]
+                        set_dock_visible(false);
+                    }
+                    WindowEvent::Focused(focused) => {
+                        window_focused.set(*focused);
+                    }
+                    _ => {}
+                }
             }
         });
 
-        // 点击托盘图标 → 重新显示窗口 + 恢复程序坞图标
+        // 点击托盘图标:
+        // - macOS:像原生菜单栏应用那样,前台已显示时隐藏;否则显示并前置。
+        // - 其它平台:维持左击显示窗口。
         use_tray_icon_event_handler(move |event| {
             eprintln!("[zms] tray icon event: {event:?}");
             if let TrayIconEvent::Click {
                 button: MouseButton::Left,
-                button_state: MouseButtonState::Up,
+                // macOS 状态栏按钮有时会在 Left Up 阶段优先弹出菜单,
+                // 因此这里放宽为任意 Left Click 都拉起主窗口。
+                button_state: MouseButtonState::Down | MouseButtonState::Up,
                 ..
             } = event
             {
                 #[cfg(target_os = "macos")]
                 {
+                    if win.is_visible() && window_focused() {
+                        win.set_visible(false);
+                        set_dock_visible(false);
+                        return;
+                    }
+
                     set_dock_visible(true);
                     set_dock_icon();
                 }
