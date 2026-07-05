@@ -10,7 +10,6 @@
 use dioxus::prelude::*;
 
 mod autostart;
-mod ble_lock;
 mod bootstrap;
 mod config;
 mod format;
@@ -20,7 +19,8 @@ mod views;
 use config::AppConfig;
 use mihomo::Controller;
 use mihomo::types;
-use views::{BleLock, ConnectionsView, Flow, Nodes, Settings};
+use std::collections::HashMap;
+use views::{ConnectionsView, Flow, Nodes, Settings};
 
 /// 全局共享的 TUN 开关状态:UI(TunControls)与系统托盘共用同一信号,保证一致。
 #[derive(Clone, Copy)]
@@ -54,8 +54,6 @@ enum Route {
     NodesPage {},
     #[route("/connections")]
     Connections {},
-    #[route("/ble-lock")]
-    BleLockPage {},
     #[route("/settings")]
     SettingsPage {},
 }
@@ -65,6 +63,18 @@ enum Route {
 const ON_PNG: &[u8] = include_bytes!("../assets/on.png");
 #[cfg(feature = "desktop")]
 const OFF_PNG: &[u8] = include_bytes!("../assets/off.png");
+
+#[cfg(feature = "desktop")]
+const TRAY_TOGGLE_ID: &str = "tray-toggle";
+#[cfg(feature = "desktop")]
+const TRAY_QUIT_ID: &str = "tray-quit";
+#[cfg(feature = "desktop")]
+const TRAY_PROXY_MENU_ID: &str = "tray-proxy-root";
+#[cfg(feature = "desktop")]
+const TRAY_PROXY_PLACEHOLDER_ID: &str = "tray-proxy-placeholder";
+
+#[cfg(feature = "desktop")]
+type TrayProxySnapshot = Vec<(String, String, Vec<String>)>;
 
 /// 侧边栏 logo:编译期内嵌为 base64 data URI(单文件 exe,不外挂 assets)。
 fn fmr_logo_uri() -> &'static str {
@@ -285,16 +295,53 @@ fn set_dock_visible(visible: bool) {
 /// muda 与 tray 菜单事件是同一类型、同一全局 handler(后注册覆盖前者),
 /// 故 tray + muda 两个 hook 都注册并共用此函数,保证一定收到。
 #[cfg(feature = "desktop")]
+fn selector_groups_from_proxies(proxies: Option<&types::Proxies>) -> Vec<types::Proxy> {
+    proxies
+        .map(|p| {
+            p.proxies
+                .values()
+                .filter(|proxy| proxy.is_selector() && proxy.name != "GLOBAL")
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[cfg(feature = "desktop")]
+fn clear_submenu_items(menu: &dioxus::desktop::muda::Submenu) {
+    while menu.remove_at(0).is_some() {}
+}
+
+#[cfg(feature = "desktop")]
+fn shorten_menu_text(text: &str, max_chars: usize) -> String {
+    let count = text.chars().count();
+    if count <= max_chars {
+        return text.to_string();
+    }
+    let keep = max_chars.saturating_sub(3);
+    let short: String = text.chars().take(keep).collect();
+    format!("{short}...")
+}
+
+#[cfg(feature = "desktop")]
+fn tray_proxy_snapshot(proxies: Option<&types::Proxies>) -> TrayProxySnapshot {
+    selector_groups_from_proxies(proxies)
+        .into_iter()
+        .map(|group| (group.name, group.now, group.all))
+        .collect()
+}
+
+#[cfg(feature = "desktop")]
 fn handle_menu_select(
     id: &dioxus::desktop::muda::MenuId,
-    toggle_id: &dioxus::desktop::muda::MenuId,
-    quit_id: &dioxus::desktop::muda::MenuId,
     config: Signal<AppConfig>,
     mut tun_state: Signal<bool>,
+    mut poke: Signal<u32>,
+    proxy_actions: Signal<HashMap<String, (String, String)>>,
     controller: &Controller,
 ) {
     eprintln!("[zms] menu select: id={id:?}");
-    if id == toggle_id {
+    if id == TRAY_TOGGLE_ID {
         let (url, secret) = {
             let c = config.read();
             (c.controller_url.clone(), c.secret.clone())
@@ -306,7 +353,21 @@ fn handle_menu_select(
                 tun_state.set(target);
             }
         });
-    } else if id == quit_id {
+    } else if let Some((group, name)) = proxy_actions.read().get(id.as_ref()).cloned() {
+        let (url, secret) = {
+            let c = config.read();
+            (c.controller_url.clone(), c.secret.clone())
+        };
+        spawn(async move {
+            if mihomo::ApiClient::new(url, secret)
+                .select_proxy(&group, &name)
+                .await
+                .is_ok()
+            {
+                poke.set(poke() + 1);
+            }
+        });
+    } else if id == TRAY_QUIT_ID {
         eprintln!("[zms] 退出:停止内核并退出程序");
         controller.stop();
         mihomo::process::kill_tracked();
@@ -321,6 +382,10 @@ fn App() -> Element {
     use_context_provider(Controller::default);
     let mut tun_state = use_context_provider(|| TunState(Signal::new(false))).0;
     let mut window_focused = use_signal(|| true);
+    #[cfg(feature = "desktop")]
+    let mut tray_proxy_actions = use_signal(HashMap::<String, (String, String)>::new);
+    #[cfg(feature = "desktop")]
+    let mut last_tray_proxy_snapshot = use_signal(|| None::<TrayProxySnapshot>);
 
     // 集中遥测:所有视图共享读取,避免每个页面各自重复轮询
     let tele = use_context_provider(|| Telemetry {
@@ -332,22 +397,6 @@ fn App() -> Element {
         down_speed: Signal::new(0),
         up_speed: Signal::new(0),
         history: Signal::new(vec![0u64; 48]),
-    });
-
-    // 蓝牙锁屏:持久化配置 + 跨页共享的会话状态。supervisor 在下面 use_future 里跑,
-    // 即使用户切到流量 / 节点页,Watching 也持续。
-    let ble_config = use_context_provider(|| Signal::new(ble_lock::BleLockConfig::load()));
-    let ble = use_context_provider(|| ble_lock::BleSession {
-        state: Signal::new(ble_lock::BleState::Idle),
-        current_rssi: Signal::new(None),
-        current_status: Signal::new(None),
-        missing_count: Signal::new(0),
-        rssi_history: Signal::new(Vec::new()),
-        armed: Signal::new(false),
-        session_id: Signal::new(0),
-        cooldown_remaining_ms: Signal::new(0),
-        lock_cancel_requested: Signal::new(false),
-        error_msg: Signal::new(None),
     });
 
     // 挂载后设置 Dock 图标(此时 NSApplication 已就绪)
@@ -477,34 +526,29 @@ fn App() -> Element {
         }
     });
 
-    // 蓝牙锁屏 supervisor:跨页常驻,巡视 BleState,看到 Watching+新 session_id
-    // 就启动一次 run_watch_session;会话结束后(锁屏 / 用户停止)继续巡视。
-    use_future(move || async move {
-        ble_lock::supervisor(ble, ble_config).await;
-    });
-
-    // 启动 probe:已绑定 + 启用自动保护 + 手机在阈值内 → 自动翻到 Watching,
-    // 让 supervisor 接管。失败 / 不在范围内都静默,不打断"开 app"体验。
-    use_future(move || async move {
-        ble_lock::try_autostart(ble, ble_config).await;
-    });
-
     // 系统托盘图标:随共享 TUN 状态切换 on/off
     #[cfg(feature = "desktop")]
     {
-        use dioxus::desktop::muda::{Menu, MenuItem, PredefinedMenuItem};
+        use dioxus::desktop::muda::{CheckMenuItem, Menu, MenuId, MenuItem, PredefinedMenuItem, Submenu};
         use dioxus::desktop::trayicon::{init_tray_icon, use_tray_icon};
-        // 构建托盘右键菜单:启动/停止(切 TUN)+ 退出,仅一次
-        let (toggle_item, quit_item) = use_hook(|| {
-            let toggle = MenuItem::new("启动", true, None);
-            let quit = MenuItem::new("退出", true, None);
+        // 构建托盘右键菜单:启动/停止 + 节点切换 + 退出,仅一次
+        let (toggle_item, proxy_menu, _quit_item) = use_hook(|| {
+            let toggle = MenuItem::with_id(TRAY_TOGGLE_ID, "启动", true, None);
+            let proxy_menu = Submenu::with_id(TRAY_PROXY_MENU_ID, "节点切换(等待中)", false);
+            let quit = MenuItem::with_id(TRAY_QUIT_ID, "退出", true, None);
             let menu = Menu::new();
-            let _ = menu.append_items(&[&toggle, &PredefinedMenuItem::separator(), &quit]);
+            let placeholder = MenuItem::with_id(TRAY_PROXY_PLACEHOLDER_ID, "等待内核就绪...", false, None);
+            let _ = proxy_menu.append(&placeholder);
+            let _ = menu.append_items(&[
+                &toggle,
+                &PredefinedMenuItem::separator(),
+                &proxy_menu,
+                &PredefinedMenuItem::separator(),
+                &quit,
+            ]);
             init_tray_icon(menu, tray_icon_from_png(OFF_PNG));
-            (toggle, quit)
+            (toggle, proxy_menu, quit)
         });
-        let toggle_id = toggle_item.id().clone();
-        let quit_id = quit_item.id().clone();
         let tray = use_tray_icon();
 
         // 状态变化时在主线程更新托盘图标 + 菜单项文字(非 Send 句柄,放 effect)
@@ -524,6 +568,64 @@ fn App() -> Element {
                 let _ = t.set_icon(icon);
             }
             toggle_for_effect.set_text(if on { "停止" } else { "启动" });
+        });
+
+        let proxy_menu_for_effect = proxy_menu.clone();
+        use_effect(move || {
+            let snapshot = tray_proxy_snapshot(tele.proxies.read().as_ref());
+            if last_tray_proxy_snapshot.read().as_ref() == Some(&snapshot) {
+                return;
+            }
+
+            let groups = selector_groups_from_proxies(tele.proxies.read().as_ref());
+            let mut actions = HashMap::new();
+
+            clear_submenu_items(&proxy_menu_for_effect);
+
+            if groups.is_empty() {
+                proxy_menu_for_effect.set_text("节点切换(等待中)");
+                proxy_menu_for_effect.set_enabled(false);
+                let placeholder =
+                    MenuItem::with_id(TRAY_PROXY_PLACEHOLDER_ID, "等待内核就绪...", false, None);
+                let _ = proxy_menu_for_effect.append(&placeholder);
+                tray_proxy_actions.set(actions);
+                last_tray_proxy_snapshot.set(Some(snapshot));
+                return;
+            }
+
+            proxy_menu_for_effect.set_text("节点切换");
+            proxy_menu_for_effect.set_enabled(true);
+
+            for (group_idx, group) in groups.iter().enumerate() {
+                let title = shorten_menu_text(
+                    &format!("{} -> {}", group.name, group.now),
+                    28,
+                );
+                let submenu =
+                    Submenu::with_id(MenuId::new(format!("tray-proxy-group-{group_idx}")), title, true);
+
+                for (member_idx, member) in group.all.iter().enumerate() {
+                    let menu_id = MenuId::new(format!("tray-proxy-item-{group_idx}-{member_idx}"));
+                    actions.insert(
+                        menu_id.as_ref().to_string(),
+                        (group.name.clone(), member.clone()),
+                    );
+                    let item =
+                        CheckMenuItem::with_id(
+                            menu_id,
+                            shorten_menu_text(member, 28),
+                            true,
+                            *member == group.now,
+                            None,
+                        );
+                    let _ = submenu.append(&item);
+                }
+
+                let _ = proxy_menu_for_effect.append(&submenu);
+            }
+
+            tray_proxy_actions.set(actions);
+            last_tray_proxy_snapshot.set(Some(snapshot));
         });
 
         // 关窗(WindowHides 已隐藏窗口)→ 额外隐藏程序坞图标
@@ -583,15 +685,29 @@ fn App() -> Element {
         // 不确定是哪个,故都挂上,共用 handle_menu_select)
         let menu_ctrl = use_context::<Controller>();
         {
-            let (tid, qid, ctrl) = (toggle_id.clone(), quit_id.clone(), menu_ctrl.clone());
+            let ctrl = menu_ctrl.clone();
             use_tray_menu_event_handler(move |e| {
-                handle_menu_select(&e.id, &tid, &qid, config, tun_state, &ctrl)
+                handle_menu_select(
+                    &e.id,
+                    config,
+                    tun_state,
+                    tele.poke,
+                    tray_proxy_actions,
+                    &ctrl,
+                )
             });
         }
         {
-            let (tid, qid, ctrl) = (toggle_id.clone(), quit_id.clone(), menu_ctrl.clone());
+            let ctrl = menu_ctrl.clone();
             use_muda_event_handler(move |e| {
-                handle_menu_select(&e.id, &tid, &qid, config, tun_state, &ctrl)
+                handle_menu_select(
+                    &e.id,
+                    config,
+                    tun_state,
+                    tele.poke,
+                    tray_proxy_actions,
+                    &ctrl,
+                )
             });
         }
 
@@ -651,8 +767,7 @@ fn Shell() -> Element {
                     NavItem { to: Route::FlowPage {}, index: "01", label: "流量" }
                     NavItem { to: Route::NodesPage {}, index: "02", label: "节点" }
                     NavItem { to: Route::Connections {}, index: "03", label: "连接" }
-                    NavItem { to: Route::BleLockPage {}, index: "04", label: "锁屏" }
-                    NavItem { to: Route::SettingsPage {}, index: "05", label: "设置" }
+                    NavItem { to: Route::SettingsPage {}, index: "04", label: "设置" }
                 }
                 // 页脚:点击图标跳转作者主页
                 div { class: "mt-auto",
@@ -708,9 +823,4 @@ fn SettingsPage() -> Element {
 #[component]
 fn NodesPage() -> Element {
     rsx! { Nodes {} }
-}
-
-#[component]
-fn BleLockPage() -> Element {
-    rsx! { BleLock {} }
 }

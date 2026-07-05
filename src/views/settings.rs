@@ -1,5 +1,4 @@
 use crate::autostart;
-use crate::ble_lock::{notifier, BleLockConfig};
 use crate::bootstrap;
 use crate::config::AppConfig;
 use crate::format;
@@ -9,7 +8,6 @@ use dioxus::prelude::*;
 #[component]
 pub fn Settings() -> Element {
     let mut config = use_context::<Signal<AppConfig>>();
-    let mut ble_config = use_context::<Signal<BleLockConfig>>();
     let controller = use_context::<Controller>();
     let mut autostart_enabled = use_signal(autostart::is_enabled);
     let mut autostart_error = use_signal(|| None::<String>);
@@ -19,8 +17,6 @@ pub fn Settings() -> Element {
     let mut updating = use_signal(|| false);
     let mut core_status = use_signal(|| None::<String>);
     let mut core_busy = use_signal(|| false);
-    let mut bark_status = use_signal(|| None::<String>);
-    let mut bark_busy = use_signal(|| false);
 
     // 删除现有 mihomo 二进制并重新下载,然后重启内核
     let redownload_core = {
@@ -97,30 +93,8 @@ pub fn Settings() -> Element {
         });
     };
 
-    // 手动触发一次 Bark 推送 —— 让用户落盘前先验证 URL 是否好用。
-    let test_bark = move |_| {
-        if bark_busy() {
-            return;
-        }
-        let url = ble_config().bark_url.trim().to_string();
-        if url.is_empty() {
-            bark_status.set(Some("请先填写推送地址".to_string()));
-            return;
-        }
-        bark_busy.set(true);
-        bark_status.set(Some("推送中…".to_string()));
-        spawn(async move {
-            let msg = match notifier::notify(&url).await {
-                Ok(()) => "已推送 ✓".to_string(),
-                Err(e) => format!("失败:{e}"),
-            };
-            bark_status.set(Some(msg));
-            bark_busy.set(false);
-        });
-    };
-
     rsx! {
-        // 满高列布局 + 内容溢出时纵向滚动(03/系统 区块加入后内容可能超过窗口高度)
+        // 满高列布局 + 内容溢出时纵向滚动
         div { class: "h-full px-6 md:px-12 py-6 max-w-3xl mx-auto flex flex-col gap-6 overflow-y-auto",
             header { class: "border-b-2 border-black pb-4",
                 div { class: "text-[11px] uppercase tracking-[0.25em] text-neutral-500", "Configuration" }
@@ -197,7 +171,7 @@ pub fn Settings() -> Element {
                 }
             }
 
-            // 系统区块:开机启动 + BLE 启动时自动启用保护
+            // 系统区块:开机启动
             section {
                 div { class: "text-[11px] uppercase tracking-[0.2em] text-[#e3000f] border-b border-black pb-2 mb-4", "03 / 系统" }
                 div { class: "space-y-4",
@@ -233,54 +207,6 @@ pub fn Settings() -> Element {
                             }
                         }
                     }
-
-                    // BLE 启动时自动启用保护
-                    label { class: "flex items-start gap-3 cursor-pointer",
-                        input {
-                            r#type: "checkbox",
-                            class: "mt-1 w-4 h-4 accent-[#e3000f] cursor-pointer",
-                            checked: ble_config().auto_protect_on_launch,
-                            onchange: move |evt| {
-                                let want = evt.value().parse::<bool>().unwrap_or(false);
-                                ble_config.write().auto_protect_on_launch = want;
-                                let _ = ble_config.read().save();
-                            },
-                        }
-                        div { class: "flex-1",
-                            div { class: "text-sm font-medium", "打开应用时自动启用蓝牙锁屏保护" }
-                            div { class: "mt-1 text-xs text-neutral-500 leading-relaxed",
-                                "需先在 04 / 蓝牙锁屏 页绑定设备。启动后做一次 3 秒 probe,扫到目标且 RSSI 达阈值则直接进入保护中。"
-                            }
-                        }
-                    }
-                }
-            }
-
-            // 推送通知:Bark(iOS)— 锁屏前 best-effort 推送
-            section {
-                div { class: "text-[11px] uppercase tracking-[0.2em] text-[#e3000f] border-b border-black pb-2 mb-4", "04 / 推送通知" }
-                Field {
-                    label: "Bark 推送地址(锁屏前 best-effort GET,空 = 禁用)",
-                    value: ble_config().bark_url,
-                    placeholder: "https://api.day.app/<key>/标题/正文",
-                    oninput: move |v| {
-                        ble_config.write().bark_url = v;
-                        let _ = ble_config.read().save();
-                    },
-                }
-                div { class: "mt-4 flex items-center gap-4",
-                    button {
-                        class: "px-6 py-2 bg-black text-white text-sm uppercase tracking-[0.15em] hover:bg-[#e3000f] disabled:opacity-40 transition-colors",
-                        disabled: bark_busy(),
-                        onclick: test_bark,
-                        if bark_busy() { "推送中…" } else { "测试推送" }
-                    }
-                    if let Some(s) = bark_status() {
-                        span { class: "text-xs uppercase tracking-[0.12em] text-neutral-600", "{s}" }
-                    }
-                }
-                div { class: "mt-3 text-xs text-neutral-500 leading-relaxed",
-                    "iOS App「Bark」可在 设置 → 服务器 找到你的专属地址。锁屏前会 GET 一次此 URL,3 秒超时;任何失败都不阻止锁屏。"
                 }
             }
 
