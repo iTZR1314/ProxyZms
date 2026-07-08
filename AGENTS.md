@@ -16,18 +16,22 @@ State is shared through **Dioxus context** (no signal prop-drilling), provided o
 - `Signal<AppConfig>` — persisted config (`use_context_provider(|| Signal::new(AppConfig::load()))`).
 - `Controller` — `Clone` (`Arc<Inner>`) + `Send` kernel handle (`use_context_provider(Controller::default)`).
 - `TunState(Signal<bool>)` — shared TUN on/off, read by **both** UI and tray. Its **only writer** is the 2s `/configs` polling loop in `App`; toggles never optimistically update — they set the signal only after the API call succeeds.
+- `Telemetry` — centralized telemetry (speed, history, connections, configs, proxies) polled at 2s/1Hz intervals in `App` and read by views to avoid redundant API polling.
+- `Signal<BleLockConfig>` — persisted configuration for the Bluetooth Lock feature.
+- `BleSession` — shared Bluetooth Lock screen state machine (Idle, Watching, LockPending, Locked) and session metrics.
 
-Data flow: `App` provides context + tray + polling → `Router::<Route>` renders `Shell` (sidebar + `Outlet`) → views read context, call `ApiClient`/`Controller`, and run their own `use_future` polling loops (throughput, IPv6 probe). Routes (`#[layout(Shell)]`): `/`→`FlowPage`, `/connections`→`Connections`, `/settings`→`SettingsPage`; these are thin wrappers rendering `Flow` / `ConnectionsView` / `Settings`.
+Data flow: `App` provides context + tray + polling → `Router::<Route>` renders `Shell` (sidebar + `Outlet`) → views read context, call `ApiClient`/`Controller`, and run their own `use_future` polling loops (throughput, IPv6 probe). Routes (`#[layout(Shell)]`): `/`→`FlowPage`, `/nodes`→`NodesPage`, `/connections`→`Connections`, `/ble-lock`→`BleLockPage`, `/settings`→`SettingsPage`; these are thin wrappers rendering `Flow` / `Nodes` / `ConnectionsView` / `BleLock` / `Settings`.
 
 ## Key Directories
 
 - `src/` — all Rust source.
   - `src/main.rs` — entry point, `App` root, `Route` enum, `Shell` layout, system tray, single-instance lock, 2s polling loop, macOS dock/icon shims, compile-time CSS/icon embedding.
   - `src/bootstrap.rs` — managed data dir (`<config_dir>/proxy-zms/mihomo`), per-platform binary download/extract, subscription fetch, control seizure.
+  - `src/ble_lock/` — Bluetooth Lock screen feature core logic (scanning, monitoring, platform-specific locker).
   - `src/config.rs` — `AppConfig` (JSON-persisted).
   - `src/format.rs` — byte/speed humanizers.
   - `src/mihomo/` — `api.rs` (`ApiClient` REST client), `process.rs` (`Controller`, elevation), `types.rs` (Deserialize models).
-  - `src/views/` — `flow.rs` (Home/状态 — **the real dashboard**), `proxies.rs` (`ProxyGroups`, `TunControls`), `connections.rs`, `settings.rs`; private modules with flat `pub use` re-exports in `mod.rs`.
+  - `src/views/` — `flow.rs` (Home/状态 — **the real dashboard**), `proxies.rs` (`ProxyGroups`, `TunControls`), `connections.rs`, `settings.rs`, `ble_lock.rs` & `ble_components.rs` (BLE Lock screen views & subcomponents); private modules with flat `pub use` re-exports in `mod.rs`.
 - `assets/` — `main.css` (hand-written global CSS), `tailwind.css` (compiled output), icons/logos (most embedded at compile time).
 - `.github/workflows/` — `ci.yml`, `release.yml`.
 
@@ -65,6 +69,7 @@ dx bundle --release --platform macos --package-types dmg  # package macOS .dmg
   let cfg = ApiClient::new(&url, &secret).configs().await; // borrow already dropped
   ```
 - **State management**: `use_signal` (local), `use_resource` (async fetch), `use_future` (dominant: `loop { …; tokio::time::sleep(…).await }` polling), `use_effect` (react to signals), `use_context::<T>()` (shared state). **Not used anywhere**: `use_memo`, `ReadOnlySignal`, `Signal<T>` as a prop.
+- **Bluetooth Lock Screen (BLE Lock)**: Uses `BleSession` context to share real-time RSSI, state (Idle, Watching, LockPending, Locked), history, countdown, etc. A background supervisor in `App` (`src/ble_lock/runner.rs`) handles periodic scanning and RSSI-based locking. Do not bypass `BleSession` when updating or monitoring bluetooth lock states.
 - **Components (Dioxus 0.7)**: `#[component]` fns, capitalized names. Top-level views take **no props**; helper components take **owned** values (`String`/`bool`/`Element`) plus `EventHandler<T>` callbacks (e.g. `Field(label, value, placeholder, oninput: EventHandler<String>)`), never signals. Remember 0.7: `cx`/`Scope`/`use_state` are gone.
 - **RSX/styling**: Tailwind utility strings inline in `rsx!`; brand red is `#e3000f` (`--accent` in `main.css`). Prefer `for`/`if` directly in `rsx!`.
 - **serde**: API models are `Deserialize`-only; `AppConfig` is `Serialize + Deserialize + PartialEq` with `#[serde(default)]` on newer fields.
@@ -74,6 +79,7 @@ dx bundle --release --platform macos --package-types dmg  # package macOS .dmg
 
 - `src/main.rs` — entry, `App`, `Route`/`Shell`, tray, single-instance (loopback `127.0.0.1:53682`, release-only), polling loop, asset embedding.
 - `src/bootstrap.rs` — bootstrap state + control seizure.
+- `src/ble_lock/` — `mod.rs` (BleState, BleSession, supervisory loop), `runner.rs` (background monitor), `scanner.rs` (BLE scanning), `locker.rs` (OS lock command).
 - `src/mihomo/process.rs` — `Controller`, kill paths, `is_elevated`/`elevate_binary` (macOS setuid via AppleScript prompt; Windows no-op, elevated by manifest).
 - `src/mihomo/api.rs` — `ApiClient` (`/version`, `/configs`, `/connections`, `/proxies`, `set_mode`, `set_tun`, `select_proxy`, `group_delay`).
 - `src/views/flow.rs` — home/status page; holds the `NORMAL_MODE` const (see Testing).
