@@ -157,12 +157,13 @@ pub fn Nodes() -> Element {
                                     }
                                 }
                             }
-                            // 芯片区:flex-1 + min-h-0 + 内部静默滚动(.no-scrollbar)
-                            div { class: "flex-1 min-h-0 overflow-y-auto no-scrollbar p-4",
-                                div { class: "flex flex-wrap gap-2",
+                            // 节点列表:flex-1 + min-h-0 + 内部静默滚动(.no-scrollbar)
+                            // 一行一个节点,左侧红点标记当前选中,右侧延迟右对齐(tabular-nums 对齐数位)
+                            div { class: "flex-1 min-h-0 overflow-y-auto no-scrollbar",
+                                div {
                                     for member in group.all.iter() {
                                         {
-                                            let chip_active = *member == group.now;
+                                            let row_active = *member == group.now;
                                             let delay = map.get(member).and_then(|p| p.last_delay());
                                             let g = gname.clone();
                                             let m = member.clone();
@@ -170,10 +171,10 @@ pub fn Nodes() -> Element {
                                                 button {
                                                     key: "{member}",
                                                     title: "{member}",
-                                                    class: if chip_active {
-                                                        "max-w-full px-3 py-1.5 text-sm bg-black text-white border border-black flex items-center gap-2"
+                                                    class: if row_active {
+                                                        "w-full flex items-center gap-3 px-4 py-2.5 text-sm text-left bg-black text-white border-b border-neutral-200"
                                                     } else {
-                                                        "max-w-full px-3 py-1.5 text-sm border border-neutral-300 text-neutral-700 hover:border-black transition-colors flex items-center gap-2"
+                                                        "w-full flex items-center gap-3 px-4 py-2.5 text-sm text-left text-neutral-700 border-b border-neutral-200 hover:bg-neutral-50 transition-colors"
                                                     },
                                                     onclick: move |_| {
                                                         let g = g.clone();
@@ -188,18 +189,25 @@ pub fn Nodes() -> Element {
                                                             poke.set(poke() + 1);
                                                         });
                                                     },
-                                                    if chip_active {
-                                                        span { class: "w-1.5 h-1.5 shrink-0 bg-[#e3000f]" }
+                                                    // 选中标记:未选中也占位,保证节点名左边界对齐
+                                                    span {
+                                                        class: if row_active {
+                                                            "w-1.5 h-1.5 shrink-0 bg-[#e3000f]"
+                                                        } else {
+                                                            "w-1.5 h-1.5 shrink-0"
+                                                        }
                                                     }
-                                                    span { class: "truncate max-w-[200px]", "{member}" }
-                                                    if let Some(d) = delay {
-                                                        span {
-                                                            class: if chip_active {
-                                                                "shrink-0 min-w-[3.25rem] text-right text-[11px] tabular-nums text-neutral-300"
-                                                            } else {
-                                                                "shrink-0 min-w-[3.25rem] text-right text-[11px] tabular-nums text-neutral-400"
-                                                            },
+                                                    span { class: "flex-1 min-w-0 truncate", "{member}" }
+                                                    span {
+                                                        class: if row_active {
+                                                            "shrink-0 min-w-[3.25rem] text-right text-[11px] tabular-nums text-neutral-300"
+                                                        } else {
+                                                            "shrink-0 min-w-[3.25rem] text-right text-[11px] tabular-nums text-neutral-400"
+                                                        },
+                                                        if let Some(d) = delay {
                                                             "{d} ms"
+                                                        } else {
+                                                            "—"
                                                         }
                                                     }
                                                 }
