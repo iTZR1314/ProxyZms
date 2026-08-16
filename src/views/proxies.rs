@@ -2,6 +2,7 @@ use crate::config::AppConfig;
 use crate::mihomo::process;
 use crate::mihomo::types::Proxy;
 use crate::mihomo::{ApiClient, Controller};
+use crate::node_notes;
 use crate::Telemetry;
 use dioxus::prelude::*;
 use std::collections::{BTreeMap, HashSet};
@@ -22,6 +23,11 @@ pub fn Nodes() -> Element {
         .as_ref()
         .map(|c| c.mode.clone())
         .unwrap_or_default();
+    // 节点备注:直接读 config.yaml 里的注释(文件没变就走缓存,只 stat 一次)
+    let notes = {
+        let c = config.read();
+        node_notes::load(&c.work_dir)
+    };
     let map: BTreeMap<String, Proxy> = match tele.proxies.read().as_ref() {
         Some(p) => p.proxies.clone(),
         None => BTreeMap::new(),
@@ -124,6 +130,14 @@ pub fn Nodes() -> Element {
                     let gname = group.name.clone();
                     let gname_test = gname.clone();
                     let is_testing = testing.read().contains(&gname);
+                    // 整组都没写注释时(换了订阅 / 别的机场),收起备注列,节点名占满整行;
+                    // 注释被分成多段(`甲骨文 · 日本大阪 · IPv6`)才按列对齐,否则整条塞一列
+                    let has_notes = group.all.iter().any(|m| notes.contains_key(m.as_str()));
+                    let columnar = group
+                        .all
+                        .iter()
+                        .filter_map(|m| notes.get(m.as_str()))
+                        .any(|n| n.parts() >= 2);
                     rsx! {
                         div { class: "mt-4 border border-black flex-1 min-h-0 flex flex-col",
                             // 组头:固定不滚
@@ -165,12 +179,31 @@ pub fn Nodes() -> Element {
                                         {
                                             let row_active = *member == group.now;
                                             let delay = map.get(member).and_then(|p| p.last_delay());
+                                            // 备注来自 config.yaml 的注释;没写注释的节点这里全是空串
+                                            let note = notes.get(member.as_str()).cloned().unwrap_or_default();
+                                            let (n0, n1, n2) = (
+                                                note.col(0).to_string(),
+                                                note.col(1).to_string(),
+                                                note.col(2).to_string(),
+                                            );
+                                            let n_full = note.text();
+                                            // 窗口窄时几列都会截断,悬停用 title 补全整行信息
+                                            let row_title = if n_full.is_empty() {
+                                                member.clone()
+                                            } else {
+                                                format!("{member} · {n_full}")
+                                            };
+                                            let note_cls = if row_active {
+                                                "text-[11px] text-neutral-400"
+                                            } else {
+                                                "text-[11px] text-neutral-500"
+                                            };
                                             let g = gname.clone();
                                             let m = member.clone();
                                             rsx! {
                                                 button {
                                                     key: "{member}",
-                                                    title: "{member}",
+                                                    title: "{row_title}",
                                                     class: if row_active {
                                                         "w-full flex items-center gap-3 px-4 py-2.5 text-sm text-left bg-black text-white border-b border-neutral-200"
                                                     } else {
@@ -197,7 +230,23 @@ pub fn Nodes() -> Element {
                                                             "w-1.5 h-1.5 shrink-0"
                                                         }
                                                     }
-                                                    span { class: "flex-1 min-w-0 truncate", "{member}" }
+                                                    span {
+                                                        class: if has_notes {
+                                                            "w-40 shrink-0 truncate"
+                                                        } else {
+                                                            "flex-1 min-w-0 truncate"
+                                                        },
+                                                        "{member}"
+                                                    }
+                                                    // 备注:分段的按「定宽 + 定宽 + 剩余」三列对齐成表格,
+                                                    // 没分段的整条占一列;没写注释的节点这几格是空白,不影响对齐
+                                                    if has_notes && columnar {
+                                                        span { class: "w-20 shrink-0 truncate {note_cls}", "{n0}" }
+                                                        span { class: "w-24 shrink-0 truncate {note_cls}", "{n1}" }
+                                                        span { class: "flex-1 min-w-0 truncate {note_cls}", "{n2}" }
+                                                    } else if has_notes {
+                                                        span { class: "flex-1 min-w-0 truncate {note_cls}", "{n_full}" }
+                                                    }
                                                     span {
                                                         class: if row_active {
                                                             "shrink-0 min-w-[3.25rem] text-right text-[11px] tabular-nums text-neutral-300"

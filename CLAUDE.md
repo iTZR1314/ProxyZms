@@ -32,8 +32,9 @@ CI uses `cargo binstall dioxus-cli@0.7.10`). Tailwind v4 is automatic in Dioxus 
 `tailwind.css` (`@import "tailwindcss";`) is the input, `dx` compiles it to `assets/tailwind.css`
 (committed). No watcher, `package.json`, or `tailwind.config.js`.
 
-**There are no tests** in this repo — no `#[test]`, no `tests/`, CI runs no `cargo test`.
-Verify with clippy + build, then hand a runtime check to the user.
+**Almost no tests** — the only `#[test]`s are the comment-parser units in `src/node_notes.rs`
+(`cargo test`, also run by CI). There is no `tests/` dir and nothing else is covered: verify with
+clippy + build, then hand a runtime check to the user.
 
 **Don't run `dx serve` yourself** — it opens a real window *and* spawns the real mihomo kernel,
 which will fight the user's running instance over the control port. Ask the user to run it.
@@ -144,7 +145,10 @@ Routes under `#[layout(Shell)]`: `/` → `Flow` (流量, also the first-run boot
   uses UDP `connect` to trigger route selection **without sending a packet**, so a blocked host
   doesn't produce a false negative.
 - `views/proxies.rs` — `Nodes` (mode switch + selector-group tabs + latency test; hides the built-in
-  `GLOBAL` group) and `TunControls` (TUN toggle + 授权 button).
+  `GLOBAL` group) and `TunControls` (TUN toggle + 授权 button). Each node row's 供应商/地区/协议
+  note is **parsed out of the comments in `config.yaml`** (`src/node_notes.rs`) — mihomo's API has
+  no such field, so the subscription's own YAML comments are the source of truth. mtime-cached, so
+  the 2s re-render only costs a `stat`.
 - `views/connections.rs`, `views/settings.rs` — connection table and settings editor.
 - `main.rs` also carries a large `#[cfg(feature = "desktop")]` block: tray icon that swaps with TUN
   state, a right-click menu (启动/停止 · 节点切换 submenu rebuilt from `Telemetry.proxies` · 退出),

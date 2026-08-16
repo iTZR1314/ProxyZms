@@ -14,6 +14,7 @@ mod bootstrap;
 mod config;
 mod format;
 mod mihomo;
+mod node_notes;
 mod views;
 
 use config::AppConfig;

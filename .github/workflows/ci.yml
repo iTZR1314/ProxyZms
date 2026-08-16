@@ -43,5 +43,9 @@ jobs:
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
 
+      # 目前只有 node_notes 的注释解析单测,但它是手写的按行解析,值得守住
+      - name: Test
+        run: cargo test
+
       - name: Build
         run: cargo build --release
