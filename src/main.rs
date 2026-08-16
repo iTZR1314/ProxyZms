@@ -85,7 +85,7 @@ fn fmr_logo_uri() -> &'static str {
     static URI: OnceLock<String> = OnceLock::new();
     URI.get_or_init(|| {
         let b64 = base64::engine::general_purpose::STANDARD
-            .encode(include_bytes!("../assets/dongguanjinrong.png"));
+            .encode(include_bytes!("../assets/zhoumaosen.png"));
         format!("data:image/png;base64,{b64}")
     })
 }
@@ -884,7 +884,7 @@ fn Shell() -> Element {
                         onclick: |_| {
                             let _ = webbrowser::open("https://zhoumaosen.top");
                         },
-                        img { src: fmr_logo_uri(), class: "w-16 h-16", alt: "dongguanjinrong" }
+                        img { src: fmr_logo_uri(), class: "w-16 h-16", alt: "zhoumaosen" }
                         div { class: "text-center leading-tight",
                             div { class: "text-xs uppercase tracking-[0.2em] text-neutral-600", "DongGuanJinRong" }
                             div { class: "text-[10px] uppercase tracking-[0.2em] text-neutral-400", {concat!("2026 v", env!("CARGO_PKG_VERSION"))} }
