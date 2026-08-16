@@ -7,6 +7,7 @@
     'Noto Color Emoji';
     --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New',
     monospace;
+    --color-red-500: oklch(63.7% 0.237 25.331);
     --color-neutral-50: oklch(98.5% 0 0);
     --color-neutral-200: oklch(92.2% 0 0);
     --color-neutral-300: oklch(87% 0 0);
@@ -482,8 +483,8 @@
     border-left-style: var(--tw-border-style);
     border-left-width: 4px;
   }
-  .border-\[\#e3000f\] {
-    border-color: #e3000f;
+  .border-\[var\(--accent\)\] {
+    border-color: var(--accent);
   }
   .border-black {
     border-color: var(--color-black);
@@ -517,6 +518,9 @@
   }
   .bg-\[\#e3000f\] {
     background-color: #e3000f;
+  }
+  .bg-\[var\(--accent\)\] {
+    background-color: var(--accent);
   }
   .bg-black {
     background-color: var(--color-black);
@@ -707,8 +711,8 @@
   .break-all {
     word-break: break-all;
   }
-  .text-\[\#e3000f\] {
-    color: #e3000f;
+  .text-\[var\(--accent\)\] {
+    color: var(--accent);
   }
   .text-black {
     color: var(--color-black);
@@ -731,6 +735,9 @@
   .text-neutral-900 {
     color: var(--color-neutral-900);
   }
+  .text-red-500 {
+    color: var(--color-red-500);
+  }
   .text-white {
     color: var(--color-white);
   }
@@ -741,8 +748,8 @@
     --tw-numeric-spacing: tabular-nums;
     font-variant-numeric: var(--tw-ordinal,) var(--tw-slashed-zero,) var(--tw-numeric-figure,) var(--tw-numeric-spacing,) var(--tw-numeric-fraction,);
   }
-  .accent-\[\#e3000f\] {
-    accent-color: #e3000f;
+  .accent-\[var\(--accent\)\] {
+    accent-color: var(--accent);
   }
   .transition {
     transition-property: color, background-color, border-color, outline-color, text-decoration-color, fill, stroke, --tw-gradient-from, --tw-gradient-via, --tw-gradient-to, opacity, box-shadow, transform, translate, scale, rotate, filter, -webkit-backdrop-filter, backdrop-filter, display, visibility, content-visibility, overlay, pointer-events;
@@ -770,10 +777,10 @@
       }
     }
   }
-  .hover\:bg-\[\#e3000f\] {
+  .hover\:bg-\[var\(--accent\)\] {
     &:hover {
       @media (hover: hover) {
-        background-color: #e3000f;
+        background-color: var(--accent);
       }
     }
   }
@@ -812,9 +819,9 @@
       }
     }
   }
-  .focus\:border-\[\#e3000f\] {
+  .focus\:border-\[var\(--accent\)\] {
     &:focus {
-      border-color: #e3000f;
+      border-color: var(--accent);
     }
   }
   .disabled\:cursor-not-allowed {

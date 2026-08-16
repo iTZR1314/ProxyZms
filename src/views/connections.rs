@@ -23,7 +23,7 @@ pub fn ConnectionsView() -> Element {
             }
 
             if !online() {
-                div { class: "mt-6 border-l-4 border-[#e3000f] pl-4 py-2 text-sm text-neutral-700", "未连接到控制器。" }
+                div { class: "mt-6 border-l-4 border-[var(--accent)] pl-4 py-2 text-sm text-neutral-700", "未连接到控制器。" }
             }
 
             // 表格直接在正常流里,纵向滚动交给外层 main(避免内层 overflow 容器吞滚轮)

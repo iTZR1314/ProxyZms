@@ -1,8 +1,51 @@
 /* Swiss / International Typographic Style 基底 */
 :root {
+    /* 告诉 webview 两套配色都支持:表单控件、原生滚动条、首帧底色都跟着走 */
+    color-scheme: light dark;
+
     --accent: #e3000f;
     --ink: #111111;
     --paper: #ffffff;
+    /* 流量条:普通柱 / 最新一柱 */
+    --bar: #161616;
+    --bar-live: #e60019;
+    --scroll-thumb: #111111;
+    --scroll-track: #ffffff;
+}
+
+/* ---- 深色模式:跟随系统,无手动开关 ----
+ *
+ * 整套 UI 是单色设计(黑 / 白 / 中性灰 + 品牌红),所以不去每个视图挂 dark:
+ * 变体,而是直接把 Tailwind 的颜色变量取反 —— Tailwind v4 的工具类编译成
+ * `color: var(--color-neutral-500)` 这种形式,在这里重定义就整体生效。
+ * 未分层(unlayered)的声明永远压过 Tailwind 的 @layer theme,不用比顺序。
+ *
+ * 灰阶按亮度镜像,black/white 互换:于是 `bg-black text-white` 这类"反白块"
+ * 在深色下自动变成"亮块 + 深字",层级关系与浅色模式完全一致。
+ * 新增颜色时请继续用 neutral 阶或 var(--accent),别写死 hex,否则不会跟着切换。
+ */
+@media (prefers-color-scheme: dark) {
+    :root {
+        --accent: #f44137; /* 品牌红提亮:深底上 5.2:1,亮块上 3.2:1 */
+        --ink: #ededed;
+        --paper: #0d0d0d;
+        --bar: #bebebe;
+        --bar-live: #f44137;
+        --scroll-thumb: #6f6f6f;
+        --scroll-track: #0d0d0d;
+
+        --color-white: #0d0d0d;
+        --color-black: #ededed;
+        --color-neutral-50: oklch(21% 0 0); /* hover 底 */
+        --color-neutral-200: oklch(28% 0 0); /* 分隔线 */
+        --color-neutral-300: oklch(34% 0 0);
+        --color-neutral-400: oklch(58% 0 0); /* 弱化文字 */
+        --color-neutral-500: oklch(64% 0 0); /* 说明文字 */
+        --color-neutral-600: oklch(72% 0 0);
+        --color-neutral-700: oklch(80% 0 0); /* 正文 */
+        --color-neutral-800: oklch(88% 0 0);
+        --color-neutral-900: oklch(93% 0 0);
+    }
 }
 
 html,
@@ -62,11 +105,11 @@ button {
 .flow-chart > .flow-bar {
     flex: 1;
     min-height: 2px;
-    background: #161616;
+    background: var(--bar);
     transition: height 0.55s cubic-bezier(0.4, 0, 0.2, 1);
 }
 .flow-chart > .flow-bar-last {
-    background: #e60019;
+    background: var(--bar-live);
 }
 
 /* 细滚动条,贴合极简风格 */
@@ -76,11 +119,11 @@ button {
 }
 
 ::-webkit-scrollbar-thumb {
-    background: #111111;
+    background: var(--scroll-thumb);
 }
 
 ::-webkit-scrollbar-track {
-    background: #ffffff;
+    background: var(--scroll-track);
 }
 
 /* 隐藏滚动条但保留滚轮/触控滚动:节点页芯片区等"内部静默滚动"场景 */

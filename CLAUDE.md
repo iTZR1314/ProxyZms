@@ -186,6 +186,25 @@ resolution — add new global styles to `assets/main.css` or the Tailwind input 
 Hand-written classes that Tailwind can't express (`.flow-chart`, `.flow-bar`, `.no-scrollbar`) live
 in `main.css`; brand red `#e3000f` is `--accent` there.
 
+### Dark mode = one variable block, no `dark:` variants
+
+The UI follows the system theme via a single `@media (prefers-color-scheme: dark)` block in
+`main.css` that **redefines Tailwind's own color variables** (`--color-white`/`--color-black` swap,
+`--color-neutral-*` mirrored). Tailwind v4 compiles `text-neutral-500` to
+`color: var(--color-neutral-500)`, and unlayered declarations beat `@layer theme`, so overriding
+the variables re-themes every view at once — there is not a single `dark:` class in `src/`.
+
+This only holds because the design is strictly monochrome + one accent. **Never write a literal
+color in a view** (`bg-[#e3000f]`, `text-red-500`, inline `style` colors): it won't switch. Use the
+`neutral` scale, `black`/`white`, or `var(--accent)`. `.flow-bar`/scrollbar colors go through
+`--bar`/`--bar-live`/`--scroll-*` tokens for the same reason.
+
+Two Rust-side pieces support it: the `<head>` gets `<meta name="color-scheme" content="light dark">`
+(native controls/scrollbars), and `src/theme.rs::system_is_dark()` picks the tao window's
+`with_background_color` so a dark-mode launch doesn't flash white (macOS: `AppleInterfaceStyle` via
+`NSUserDefaults`; Windows: `AppsUseLightTheme` via `reg.exe`). Live theme switching is the webview's
+job — nothing in Rust tracks it.
+
 ## Dioxus 0.7 notes
 
 `cx`/`Scope`/`use_state` are gone; state is `use_signal`/`use_future`/`use_effect`/`use_context`.

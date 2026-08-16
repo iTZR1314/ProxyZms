@@ -177,11 +177,11 @@ pub fn Flow() -> Element {
                                 if let Some(p) = pct { "{p}" } else { "—" }
                             }
                             if pct.is_some() {
-                                span { class: "text-2xl font-bold text-[#e3000f]", "%" }
+                                span { class: "text-2xl font-bold text-[var(--accent)]", "%" }
                             }
                         }
                         div { class: "mt-6 h-1 bg-neutral-200",
-                            div { class: "h-full bg-[#e3000f] transition-all", style: "width: {pct.unwrap_or(0)}%" }
+                            div { class: "h-full bg-[var(--accent)] transition-all", style: "width: {pct.unwrap_or(0)}%" }
                         }
                         p { class: "mt-3 text-xs uppercase tracking-[0.15em] text-neutral-500 tabular-nums", "{detail}" }
                     },
@@ -196,7 +196,7 @@ pub fn Flow() -> Element {
                     body: rsx! {
                         p { class: "text-sm text-neutral-600 break-words max-w-md", "{msg}" }
                         button {
-                            class: "mt-8 px-8 py-3 bg-black text-white text-sm uppercase tracking-[0.15em] hover:bg-[#e3000f] transition-colors",
+                            class: "mt-8 px-8 py-3 bg-black text-white text-sm uppercase tracking-[0.15em] hover:bg-[var(--accent)] transition-colors",
                             onclick: retry,
                             "重试"
                         }
@@ -223,7 +223,7 @@ pub fn Flow() -> Element {
                     div { class: "text-[11px] uppercase tracking-[0.25em] text-neutral-500", "Mihomo · Status" }
                     div { class: "mt-3 flex items-center gap-3",
                         span {
-                            class: if online() { "w-3.5 h-3.5 shrink-0 bg-[#e3000f]" } else { "w-3.5 h-3.5 shrink-0 border-2 border-black" },
+                            class: if online() { "w-3.5 h-3.5 shrink-0 bg-[var(--accent)]" } else { "w-3.5 h-3.5 shrink-0 border-2 border-black" },
                         }
                         h1 { class: "text-3xl font-bold tracking-tighter leading-none",
                             if online() { "RUNNING" } else { "OFFLINE" }
@@ -244,8 +244,8 @@ pub fn Flow() -> Element {
                                 }
                             },
                             Some(false) => rsx! {
-                                span { class: "flex items-center gap-2 text-xs uppercase tracking-[0.15em] text-[#e3000f]",
-                                    span { class: "w-2 h-2 bg-[#e3000f]" }
+                                span { class: "flex items-center gap-2 text-xs uppercase tracking-[0.15em] text-[var(--accent)]",
+                                    span { class: "w-2 h-2 bg-[var(--accent)]" }
                                     "不支持 IPv6"
                                 }
                             },
@@ -256,7 +256,7 @@ pub fn Flow() -> Element {
             }
 
             if let Some(err) = error() {
-                div { class: "border-l-4 border-[#e3000f] pl-4 py-2 text-sm text-neutral-700", "{err}" }
+                div { class: "border-l-4 border-[var(--accent)] pl-4 py-2 text-sm text-neutral-700", "{err}" }
             }
 
             // —— 实时流量条形图(.flow-chart 高度由 CSS 控制) ——
@@ -269,7 +269,7 @@ pub fn Flow() -> Element {
                         div { class: "flex items-baseline justify-between pb-3",
                             div { class: "text-[11px] uppercase tracking-[0.2em] text-neutral-500", "实时流量 / Throughput" }
                             div { class: "flex gap-4 tabular-nums",
-                                div { class: "text-sm font-bold tracking-tight text-[#e3000f]",
+                                div { class: "text-sm font-bold tracking-tight text-[var(--accent)]",
                                     span { class: "text-[10px] text-neutral-500 mr-1", "↓" }
                                     "{format::speed(down_speed())}"
                                 }
@@ -313,7 +313,7 @@ fn StatCell(label: String, value: String, accent: bool) -> Element {
             div { class: "text-[10px] uppercase tracking-[0.18em] text-neutral-500", "{label}" }
             div {
                 class: if accent {
-                    "mt-1 text-base font-bold tracking-tight tabular-nums leading-tight text-[#e3000f]"
+                    "mt-1 text-base font-bold tracking-tight tabular-nums leading-tight text-[var(--accent)]"
                 } else {
                     "mt-1 text-base font-bold tracking-tight tabular-nums leading-tight"
                 },

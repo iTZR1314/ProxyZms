@@ -145,7 +145,7 @@ pub fn Nodes() -> Element {
                                 div { class: "flex items-baseline gap-3 min-w-0",
                                     span { class: "shrink-0 font-bold tracking-tight", "{group.name}" }
                                     span { class: "shrink-0 text-xs uppercase tracking-[0.12em] text-neutral-400", "{group.proxy_type}" }
-                                    span { class: "truncate text-sm text-[#e3000f]", "→ {group.now}" }
+                                    span { class: "truncate text-sm text-[var(--accent)]", "→ {group.now}" }
                                 }
                                 button {
                                     class: "shrink-0 inline-flex items-center justify-center min-w-[3.25rem] px-3 py-1 text-[11px] uppercase tracking-[0.12em] border border-black hover:bg-black hover:text-white disabled:hover:bg-transparent disabled:hover:text-black transition-colors",
@@ -225,7 +225,7 @@ pub fn Nodes() -> Element {
                                                     // 选中标记:未选中也占位,保证节点名左边界对齐
                                                     span {
                                                         class: if row_active {
-                                                            "w-1.5 h-1.5 shrink-0 bg-[#e3000f]"
+                                                            "w-1.5 h-1.5 shrink-0 bg-[var(--accent)]"
                                                         } else {
                                                             "w-1.5 h-1.5 shrink-0"
                                                         }
@@ -298,7 +298,7 @@ pub fn TunControls() -> Element {
                 class: if busy {
                     "px-4 py-1.5 text-sm bg-neutral-500 border border-neutral-500 text-white inline-flex items-center justify-center min-w-[3.5rem]"
                 } else if tun_on {
-                    "px-4 py-1.5 text-sm bg-[#e3000f] text-white border border-[#e3000f] inline-flex items-center justify-center min-w-[3.5rem]"
+                    "px-4 py-1.5 text-sm bg-[var(--accent)] text-white border border-[var(--accent)] inline-flex items-center justify-center min-w-[3.5rem]"
                 } else {
                     "px-4 py-1.5 text-sm bg-black text-white border border-black hover:bg-neutral-800 transition-colors inline-flex items-center justify-center min-w-[3.5rem]"
                 },
@@ -333,7 +333,7 @@ pub fn TunControls() -> Element {
             // 未提权时:一键授权(setuid root / UAC)
             if !elevated {
                 button {
-                    class: "px-4 py-1.5 text-sm border border-[#e3000f] text-[#e3000f] hover:bg-[#e3000f] hover:text-white transition-colors",
+                    class: "px-4 py-1.5 text-sm border border-[var(--accent)] text-[var(--accent)] hover:bg-[var(--accent)] hover:text-white transition-colors",
                     onclick: move |_| {
                         let path = config.read().mihomo_path.clone();
                         let cfg = config.read().clone();

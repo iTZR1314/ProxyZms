@@ -103,7 +103,7 @@ pub fn Settings() -> Element {
 
             // 订阅区块
             section {
-                div { class: "text-[11px] uppercase tracking-[0.2em] text-[#e3000f] border-b border-black pb-2 mb-4", "01 / 订阅" }
+                div { class: "text-[11px] uppercase tracking-[0.2em] text-[var(--accent)] border-b border-black pb-2 mb-4", "01 / 订阅" }
                 Field {
                     label: "订阅地址(节点配置 YAML)",
                     value: config().subscription_url,
@@ -115,7 +115,7 @@ pub fn Settings() -> Element {
                 }
                 div { class: "mt-4 flex items-center gap-4",
                     button {
-                        class: "px-6 py-2 bg-black text-white text-sm uppercase tracking-[0.15em] hover:bg-[#e3000f] disabled:opacity-40 transition-colors",
+                        class: "px-6 py-2 bg-black text-white text-sm uppercase tracking-[0.15em] hover:bg-[var(--accent)] disabled:opacity-40 transition-colors",
                         disabled: updating(),
                         onclick: update_sub,
                         if updating() { "更新中…" } else { "更新订阅并重启" }
@@ -128,7 +128,7 @@ pub fn Settings() -> Element {
 
             // 核心区块
             section {
-                div { class: "text-[11px] uppercase tracking-[0.2em] text-[#e3000f] border-b border-black pb-2 mb-4", "02 / 核心" }
+                div { class: "text-[11px] uppercase tracking-[0.2em] text-[var(--accent)] border-b border-black pb-2 mb-4", "02 / 核心" }
                 div { class: "space-y-4",
                     Field {
                         label: "mihomo 可执行文件路径(留空使用内置下载)",
@@ -159,7 +159,7 @@ pub fn Settings() -> Element {
                     }
                     div { class: "flex items-center gap-4 pt-1",
                         button {
-                            class: "px-6 py-2 border border-[#e3000f] text-[#e3000f] text-sm uppercase tracking-[0.15em] hover:bg-[#e3000f] hover:text-white disabled:opacity-40 transition-colors",
+                            class: "px-6 py-2 border border-[var(--accent)] text-[var(--accent)] text-sm uppercase tracking-[0.15em] hover:bg-[var(--accent)] hover:text-white disabled:opacity-40 transition-colors",
                             disabled: core_busy(),
                             onclick: redownload_core,
                             if core_busy() { "处理中…" } else { "删除并重新下载核心" }
@@ -173,13 +173,13 @@ pub fn Settings() -> Element {
 
             // 系统区块:开机启动
             section {
-                div { class: "text-[11px] uppercase tracking-[0.2em] text-[#e3000f] border-b border-black pb-2 mb-4", "03 / 系统" }
+                div { class: "text-[11px] uppercase tracking-[0.2em] text-[var(--accent)] border-b border-black pb-2 mb-4", "03 / 系统" }
                 div { class: "space-y-4",
                     // 开机启动
                     label { class: "flex items-start gap-3 cursor-pointer",
                         input {
                             r#type: "checkbox",
-                            class: "mt-1 w-4 h-4 accent-[#e3000f] cursor-pointer disabled:cursor-not-allowed",
+                            class: "mt-1 w-4 h-4 accent-[var(--accent)] cursor-pointer disabled:cursor-not-allowed",
                             checked: autostart_enabled(),
                             disabled: !autostart_supported,
                             onchange: move |evt| {
@@ -203,7 +203,7 @@ pub fn Settings() -> Element {
                                 }
                             }
                             if let Some(e) = autostart_error() {
-                                div { class: "mt-1 text-xs text-[#e3000f]", "{e}" }
+                                div { class: "mt-1 text-xs text-[var(--accent)]", "{e}" }
                             }
                         }
                     }
@@ -212,12 +212,12 @@ pub fn Settings() -> Element {
 
             div { class: "flex items-center gap-4",
                 button {
-                    class: "px-8 py-2.5 bg-black text-white text-sm uppercase tracking-[0.15em] hover:bg-[#e3000f] transition-colors",
+                    class: "px-8 py-2.5 bg-black text-white text-sm uppercase tracking-[0.15em] hover:bg-[var(--accent)] transition-colors",
                     onclick: save,
                     "保存"
                 }
                 if saved() {
-                    span { class: "text-xs uppercase tracking-[0.12em] text-[#e3000f]", "已保存" }
+                    span { class: "text-xs uppercase tracking-[0.12em] text-[var(--accent)]", "已保存" }
                 }
             }
         }
@@ -235,7 +235,7 @@ fn Field(
         label { class: "block",
             span { class: "block text-[11px] uppercase tracking-[0.15em] text-neutral-500 mb-2", "{label}" }
             input {
-                class: "w-full px-0 py-2 bg-transparent border-0 border-b border-black rounded-none outline-none text-base focus:border-[#e3000f] transition-colors",
+                class: "w-full px-0 py-2 bg-transparent border-0 border-b border-black rounded-none outline-none text-base focus:border-[var(--accent)] transition-colors",
                 value,
                 placeholder,
                 oninput: move |e| oninput.call(e.value()),

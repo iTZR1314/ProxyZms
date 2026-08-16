@@ -15,6 +15,8 @@ mod config;
 mod format;
 mod mihomo;
 mod node_notes;
+#[cfg(feature = "desktop")]
+mod theme;
 mod views;
 
 use config::AppConfig;
@@ -212,8 +214,10 @@ fn main() {
 
         // 把 CSS 内容直接内联进初始 HTML 的 <head>(编译期 include_str! 嵌入)。
         // 不依赖 asset 路径解析 —— 发布版/开发版表现一致;且渲染阻塞,无 FOUC。
+        // meta color-scheme 放最前:样式还没解析时,webview 就知道两套配色都支持,
+        // 表单控件、原生滚动条、文档默认底色都会跟着系统走。
         let custom_head = format!(
-            "<style>{}</style><style>{}</style>",
+            "<meta name=\"color-scheme\" content=\"light dark\"><style>{}</style><style>{}</style>",
             include_str!("../assets/main.css"),
             include_str!("../assets/tailwind.css"),
         );
@@ -227,8 +231,13 @@ fn main() {
             // 关闭 Dioxus 内置的"左击托盘自动显示窗口",统一交给下方自定义事件处理,
             // 避免与 macOS 状态栏按钮/menu 的原生行为打架。
             .with_tray_icon_show_window_on_click(false)
-            // 初始背景设为白色,避免首帧黑/透明闪一下
-            .with_background_color((255, 255, 255, 255))
+            // 初始背景:跟随系统深浅色,避免首帧闪一下与最终配色相反的底
+            // (深色值要和 main.css 里的 --paper 保持一致)
+            .with_background_color(if theme::system_is_dark() {
+                (13, 13, 13, 255)
+            } else {
+                (255, 255, 255, 255)
+            })
             .with_custom_head(custom_head);
 
         // 隐藏 Windows/Linux 上的默认菜单栏(Window / Edit / Help)。
@@ -907,7 +916,7 @@ fn NavItem(to: Route, index: String, label: String) -> Element {
         Link {
             to,
             class: "flex items-baseline gap-4 px-6 py-3 border-l-4 border-transparent text-neutral-500 hover:text-black transition-colors",
-            active_class: "border-[#e3000f] text-black",
+            active_class: "border-[var(--accent)] text-black",
             span { class: "text-[11px] tabular-nums text-neutral-400", "{index}" }
             span { class: "text-sm uppercase tracking-[0.15em]", "{label}" }
         }
