@@ -65,6 +65,8 @@ const ON_PNG: &[u8] = include_bytes!("../assets/on.png");
 const OFF_PNG: &[u8] = include_bytes!("../assets/off.png");
 
 #[cfg(feature = "desktop")]
+const TRAY_SHOW_ID: &str = "tray-show";
+#[cfg(feature = "desktop")]
 const TRAY_TOGGLE_ID: &str = "tray-toggle";
 #[cfg(feature = "desktop")]
 const TRAY_QUIT_ID: &str = "tray-quit";
@@ -412,9 +414,13 @@ fn handle_menu_select(
     mut poke: Signal<u32>,
     proxy_actions: Signal<HashMap<String, (String, String)>>,
     controller: &Controller,
+    win: &dioxus::desktop::DesktopContext,
 ) {
     eprintln!("[zms] menu select: id={id:?}");
-    if id == TRAY_TOGGLE_ID {
+    if id == TRAY_SHOW_ID {
+        // 与托盘左击、macOS Reopen、单实例 IPC 共用同一个入口(顺序约束都在里面)
+        show_main_window(win);
+    } else if id == TRAY_TOGGLE_ID {
         let (url, secret) = {
             let c = config.read();
             (c.controller_url.clone(), c.secret.clone())
@@ -604,8 +610,9 @@ fn App() -> Element {
     {
         use dioxus::desktop::muda::{CheckMenuItem, Menu, MenuId, MenuItem, PredefinedMenuItem, Submenu};
         use dioxus::desktop::trayicon::{init_tray_icon, use_tray_icon};
-        // 构建托盘右键菜单:启动/停止 + 节点切换 + 退出,仅一次
+        // 构建托盘右键菜单:显示主界面 + 启动/停止 + 节点切换 + 退出,仅一次
         let (toggle_item, proxy_menu, _quit_item) = use_hook(|| {
+            let show = MenuItem::with_id(TRAY_SHOW_ID, "显示主界面", true, None);
             let toggle = MenuItem::with_id(TRAY_TOGGLE_ID, "启动", true, None);
             let proxy_menu = Submenu::with_id(TRAY_PROXY_MENU_ID, "节点切换(等待中)", false);
             let quit = MenuItem::with_id(TRAY_QUIT_ID, "退出", true, None);
@@ -613,6 +620,8 @@ fn App() -> Element {
             let placeholder = MenuItem::with_id(TRAY_PROXY_PLACEHOLDER_ID, "等待内核就绪...", false, None);
             let _ = proxy_menu.append(&placeholder);
             let _ = menu.append_items(&[
+                &show,
+                &PredefinedMenuItem::separator(),
                 &toggle,
                 &PredefinedMenuItem::separator(),
                 &proxy_menu,
@@ -669,13 +678,21 @@ fn App() -> Element {
             proxy_menu_for_effect.set_text("节点切换");
             proxy_menu_for_effect.set_enabled(true);
 
+            // 只有一个策略组(绝大多数订阅如此)时不再套分组层:「节点切换」直接展开节点,
+            // 少点一级。多组时才需要分组层 —— 不同组可能有同名节点,展平后无从区分归属。
+            let flatten = groups.len() == 1;
+
             for (group_idx, group) in groups.iter().enumerate() {
-                let title = shorten_menu_text(
-                    &format!("{} -> {}", group.name, group.now),
-                    28,
-                );
-                let submenu =
-                    Submenu::with_id(MenuId::new(format!("tray-proxy-group-{group_idx}")), title, true);
+                let submenu = if flatten {
+                    None
+                } else {
+                    let title = shorten_menu_text(&format!("{} -> {}", group.name, group.now), 28);
+                    Some(Submenu::with_id(
+                        MenuId::new(format!("tray-proxy-group-{group_idx}")),
+                        title,
+                        true,
+                    ))
+                };
 
                 for (member_idx, member) in group.all.iter().enumerate() {
                     let menu_id = MenuId::new(format!("tray-proxy-item-{group_idx}-{member_idx}"));
@@ -691,10 +708,19 @@ fn App() -> Element {
                             *member == group.now,
                             None,
                         );
-                    let _ = submenu.append(&item);
+                    match submenu.as_ref() {
+                        Some(sub) => {
+                            let _ = sub.append(&item);
+                        }
+                        None => {
+                            let _ = proxy_menu_for_effect.append(&item);
+                        }
+                    }
                 }
 
-                let _ = proxy_menu_for_effect.append(&submenu);
+                if let Some(sub) = submenu {
+                    let _ = proxy_menu_for_effect.append(&sub);
+                }
             }
 
             tray_proxy_actions.set(actions);
@@ -764,8 +790,10 @@ fn App() -> Element {
         // 托盘右键菜单事件:tray + muda 两个 hook 都注册(全局 handler 只有一个生效,
         // 不确定是哪个,故都挂上,共用 handle_menu_select)
         let menu_ctrl = use_context::<Controller>();
+        let win_menu = use_window();
         {
             let ctrl = menu_ctrl.clone();
+            let win = win_menu.clone();
             use_tray_menu_event_handler(move |e| {
                 handle_menu_select(
                     &e.id,
@@ -774,11 +802,13 @@ fn App() -> Element {
                     tele.poke,
                     tray_proxy_actions,
                     &ctrl,
+                    &win,
                 )
             });
         }
         {
             let ctrl = menu_ctrl.clone();
+            let win = win_menu.clone();
             use_muda_event_handler(move |e| {
                 handle_menu_select(
                     &e.id,
@@ -787,6 +817,7 @@ fn App() -> Element {
                     tele.poke,
                     tray_proxy_actions,
                     &ctrl,
+                    &win,
                 )
             });
         }
