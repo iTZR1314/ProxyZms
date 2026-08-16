@@ -1,6 +1,12 @@
 #pragma code_page(65001)
 // CREATEPROCESS_MANIFEST_RESOURCE_ID (1)  RT_MANIFEST (24)
 1 24 "proxyzms.manifest"
-// 主图标:嵌进 .exe 让 Windows Explorer / 任务栏 / 快捷方式都能拿到
-// (dx bundle 只用 Dioxus.toml 的 bundle.icon 做 NSIS 安装器外壳,不会改 exe 本身)
-1 ICON "assets/fmr.ico"
+
+// ⚠️ 这里**不要**再嵌 `1 ICON`。
+// dioxus-cli 0.7.1 时代 dx 只拿 Dioxus.toml 的 bundle.icon 做 NSIS 安装器外壳,不碰 exe
+// 本身,所以当年必须自己嵌图标。自 0.7.10 起 dx 会生成 `.winres/resource.lib` 并把 ICON
+// id 1 嵌进 exe —— 再自己嵌一份就会和它撞:
+//   CVTRES : fatal error CVT1100: duplicate resource. type:ICON, name:1
+//   LINK   : fatal error LNK1123: failure during conversion to COFF
+// 注意 `cargo build` 不链接 dx 的 .winres,只有 `dx bundle` 才会 —— 所以 CI 全绿也可能
+// 在打包阶段挂。exe 图标现由 dx 提供,VERSION 同理(见 build.rs)。
