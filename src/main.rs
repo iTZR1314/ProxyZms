@@ -89,33 +89,65 @@ fn fmr_logo_uri() -> &'static str {
 }
 
 // ===== 单实例(仅发布版)=====
-// 用固定 loopback 端口当"锁 + IPC":连得上=已有实例(通知其显示后退出);
-// 连不上=本进程为主实例(绑定监听,收到请求则置位 SHOW_REQUESTED 让窗口显示)。
+// 用固定 loopback 端口当"锁 + IPC":连得上**且握手通过**=已有本程序实例(通知其显示后退出);
+// 否则本进程为主实例(绑定监听,收到请求则置位 SHOW_REQUESTED 让窗口显示)。
+//
+// ⚠️ 端口必须避开**临时端口范围**(macOS/Windows 均为 49152-65535,
+// `sysctl net.inet.ip.portrange`)。旧版用的 53682 正落在该区间内 —— 任何进程都可能
+// 随机占到它,我们就会误判「已有实例」而**静默退出,应用从此打不开**。17653 在区间之外。
 #[cfg(not(debug_assertions))]
 static SHOW_REQUESTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(not(debug_assertions))]
+const SINGLE_INSTANCE_ADDR: &str = "127.0.0.1:17653";
+/// 握手串:确认端口对面确实是本程序,而不是碰巧占用该端口的其它进程。
+#[cfg(not(debug_assertions))]
+const HELLO: &[u8] = b"proxyzms-show\n";
+#[cfg(not(debug_assertions))]
+const ACK: &[u8] = b"proxyzms-ok\n";
 
 /// 返回 true=本进程为主实例应继续;false=已有实例(已通知其显示),应退出。
 #[cfg(not(debug_assertions))]
 fn acquire_single_instance() -> bool {
-    use std::io::Write;
+    use std::io::{Read, Write};
     use std::net::{TcpListener, TcpStream};
     use std::sync::atomic::Ordering;
-    const ADDR: &str = "127.0.0.1:53682";
-    // 已有实例:通知它显示窗口,本进程退出
-    if let Ok(mut stream) = TcpStream::connect(ADDR) {
-        // Windows:把"窃取前台焦点"的权限放给任意进程,主实例 set_focus()
-        // 内部的 SetForegroundWindow 才不会被前台焦点保护策略静默拒掉
-        // (否则只闪任务栏,窗口不前置)。
-        #[cfg(windows)]
-        allow_other_set_foreground();
-        let _ = stream.write_all(b"show");
-        return false;
+    use std::time::Duration;
+
+    // —— 探测:端口对面是不是「另一个我」——
+    if let Ok(addr) = SINGLE_INSTANCE_ADDR.parse() {
+        if let Ok(mut stream) = TcpStream::connect_timeout(&addr, Duration::from_millis(500)) {
+            // Windows:把"窃取前台焦点"的权限放给任意进程,主实例 set_focus()
+            // 内部的 SetForegroundWindow 才不会被前台焦点保护策略静默拒掉
+            // (否则只闪任务栏,窗口不前置)。
+            #[cfg(windows)]
+            allow_other_set_foreground();
+
+            // 全程带超时:对面若是个只 accept 不回话的进程,不能把启动流程挂死。
+            let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
+            let _ = stream.set_write_timeout(Some(Duration::from_millis(500)));
+            let mut buf = [0u8; ACK.len()];
+            if stream.write_all(HELLO).is_ok()
+                && stream.read_exact(&mut buf).is_ok()
+                && buf == *ACK
+            {
+                return false; // 确认是本程序的另一实例,已请求其显示窗口
+            }
+            // 对面不是本程序(端口被别人占了):**不退出**,继续以主实例身份启动。
+            // 这次拿不到锁而已 —— 宁可多开一个,也不能出现「双击没反应」。
+            return true;
+        }
     }
-    // 主实例:占住端口,起线程接收"显示"请求
-    if let Ok(listener) = TcpListener::bind(ADDR) {
+
+    // —— 主实例:占住端口,起线程接收「显示」请求 ——
+    if let Ok(listener) = TcpListener::bind(SINGLE_INSTANCE_ADDR) {
         std::thread::spawn(move || {
-            for conn in listener.incoming() {
-                if conn.is_ok() {
+            for mut conn in listener.incoming().flatten() {
+                let _ = conn.set_read_timeout(Some(Duration::from_millis(500)));
+                let _ = conn.set_write_timeout(Some(Duration::from_millis(500)));
+                let mut buf = [0u8; HELLO.len()];
+                if conn.read_exact(&mut buf).is_ok() && buf == *HELLO {
+                    let _ = conn.write_all(ACK);
                     SHOW_REQUESTED.store(true, Ordering::SeqCst);
                 }
             }
@@ -289,6 +321,47 @@ fn set_dock_visible(visible: bool) {
         let app: *mut Object = msg_send![class!(NSApplication), sharedApplication];
         let _: () = msg_send![app, setActivationPolicy: policy];
     }
+}
+
+/// macOS:把本应用激活为最前台。
+///
+/// 仅 `set_visible(true)` 不够 —— 从 Accessory 切回 Regular 后本进程不是前台应用,
+/// 窗口会 order front 到**自己**的层级却仍被别的 App 盖住。必须显式 activate。
+///
+/// macOS 14+ 用无参 `activate`(`activateIgnoringOtherApps:` 自 14 起已废弃);
+/// 旧系统回退到 `activateIgnoringOtherApps:`。用 `respondsToSelector:` 运行时选择,
+/// 避免在新系统上调到废弃 API、也不至于在旧系统上直接 crash。
+#[cfg(target_os = "macos")]
+fn activate_app() {
+    use objc::runtime::{Object, BOOL, YES};
+    use objc::{class, msg_send, sel, sel_impl};
+    unsafe {
+        let app: *mut Object = msg_send![class!(NSApplication), sharedApplication];
+        let responds: BOOL = msg_send![app, respondsToSelector: sel!(activate)];
+        if responds == YES {
+            let _: () = msg_send![app, activate];
+        } else {
+            let _: () = msg_send![app, activateIgnoringOtherApps: true];
+        }
+    }
+}
+
+/// 把主窗口显示出来并前置。**所有**「显示主窗口」的入口都走这里,保证行为一致:
+/// 点程序坞/访达图标(macOS Reopen)、点托盘图标、另一实例请求显示。
+///
+/// macOS 上顺序不能乱:先恢复 Dock 图标(Regular)→ 显示窗口 → 激活 App → 再 set_focus。
+/// tao 的 `set_focus()` 在窗口不可见时会**直接 return**,所以必须排在 `set_visible(true)` 之后。
+#[cfg(feature = "desktop")]
+fn show_main_window(win: &dioxus::desktop::DesktopContext) {
+    #[cfg(target_os = "macos")]
+    {
+        set_dock_visible(true);
+        set_dock_icon();
+    }
+    win.set_visible(true);
+    #[cfg(target_os = "macos")]
+    activate_app();
+    win.set_focus();
 }
 
 /// 处理托盘菜单项点击:启动/停止(切 TUN)/ 退出。
@@ -637,19 +710,30 @@ fn App() -> Element {
         };
 
         let win = use_window();
-        use_wry_event_handler(move |event, _| {
-            if let Event::WindowEvent { event, .. } = event {
-                match event {
-                    WindowEvent::CloseRequested => {
-                        #[cfg(target_os = "macos")]
-                        set_dock_visible(false);
-                    }
-                    WindowEvent::Focused(focused) => {
-                        window_focused.set(*focused);
-                    }
-                    _ => {}
+
+        // macOS:应用已在运行时点它的程序坞/访达/启动台图标,AppKit 会发
+        // `applicationShouldHandleReopen:`(tao 暴露为 `Event::Reopen`)。
+        //
+        // 这是 macOS 上**唯一**能收到「点图标」的途径 —— LaunchServices 不会为同一个 .app
+        // 再启一个进程,所以下面单实例那套「新进程用 TCP 通知老进程显示」在 macOS 上压根
+        // 不会被触发。且窗口此时是 orderOut 过的,AppKit 的默认 reopen 行为也恢复不了它。
+        // 不接这个事件 = 点图标没任何反应。
+        #[cfg(target_os = "macos")]
+        let win_reopen = win.clone();
+        use_wry_event_handler(move |event, _| match event {
+            #[cfg(target_os = "macos")]
+            Event::Reopen { .. } => show_main_window(&win_reopen),
+            Event::WindowEvent { event, .. } => match event {
+                WindowEvent::CloseRequested => {
+                    #[cfg(target_os = "macos")]
+                    set_dock_visible(false);
                 }
-            }
+                WindowEvent::Focused(focused) => {
+                    window_focused.set(*focused);
+                }
+                _ => {}
+            },
+            _ => {}
         });
 
         // 点击托盘图标:
@@ -672,12 +756,8 @@ fn App() -> Element {
                         set_dock_visible(false);
                         return;
                     }
-
-                    set_dock_visible(true);
-                    set_dock_icon();
                 }
-                win.set_visible(true);
-                win.set_focus();
+                show_main_window(&win);
             }
         });
 
@@ -721,10 +801,7 @@ fn App() -> Element {
                     use std::sync::atomic::Ordering;
                     loop {
                         if SHOW_REQUESTED.swap(false, Ordering::SeqCst) {
-                            #[cfg(target_os = "macos")]
-                            set_dock_visible(true);
-                            win.set_visible(true);
-                            win.set_focus();
+                            show_main_window(&win);
                         }
                         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
                     }
