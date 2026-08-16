@@ -1,6 +1,6 @@
 [package]
 name = "VPN-JR"
-version = "0.2.9"
+version = "0.2.10"
 authors = ["ZHOUMAOSEN"]
 edition = "2021"
 license = "GPL-3.0-only"
