@@ -896,7 +896,7 @@ fn Shell() -> Element {
                         },
                         img { src: fmr_logo_uri(), class: "w-16 h-16", alt: "zhoumaosen" }
                         div { class: "text-center leading-tight",
-                            div { class: "text-xs uppercase tracking-[0.2em] text-neutral-600", "DongGuanJinRong" }
+                            div { class: "text-xs tracking-[0.2em] text-neutral-600", "无远弗届 天堑通途" }
                             div { class: "text-[10px] uppercase tracking-[0.2em] text-neutral-400", {concat!("2026 v", env!("CARGO_PKG_VERSION"))} }
                         }
                     }

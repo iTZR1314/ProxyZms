@@ -100,8 +100,9 @@ pub fn Nodes() -> Element {
                 }
             }
 
-            // ── 标签栏:每个策略组一颗 pill,wrap 进多行也只占顶部一小条 ──
-            if !groups.is_empty() {
+            // ── 标签栏:每个策略组一颗 pill,wrap 进多行也只占顶部一小条。
+            //    只有一个组时整条栏都是废话(点它也切不到别处),直接不画 ──
+            if groups.len() > 1 {
                 div { class: "mt-6 flex flex-wrap gap-2 shrink-0",
                     for g in groups.iter() {
                         {
@@ -138,8 +139,10 @@ pub fn Nodes() -> Element {
                         .iter()
                         .filter_map(|m| notes.get(m.as_str()))
                         .any(|n| n.parts() >= 2);
+                    // 标签栏被省掉时,面板自己补上与标题线之间的呼吸位
+                    let panel_gap = if groups.len() > 1 { "mt-4" } else { "mt-6" };
                     rsx! {
-                        div { class: "mt-4 border border-black flex-1 min-h-0 flex flex-col",
+                        div { class: "{panel_gap} border border-black flex-1 min-h-0 flex flex-col",
                             // 组头:固定不滚
                             div { class: "flex items-center justify-between gap-3 px-4 py-3 border-b border-neutral-200 shrink-0",
                                 div { class: "flex items-baseline gap-3 min-w-0",
