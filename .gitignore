@@ -21,3 +21,8 @@
 # 远程 Windows 打包脚本:含明文 SSH 凭据,不入库
 /upload-to-windows.sh
 /build-windows.ps1
+
+# 本地产物(手动下载的发行版 / 临时演示)
+/artifacts/
+/.codex/
+/flow-chart-demo.html
