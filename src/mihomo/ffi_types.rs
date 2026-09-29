@@ -2,8 +2,6 @@
 //!
 //! 与 REST 形态一一对应的结构体(Connections / Proxy / …)在 `types.rs` 中,
 //! Go `snapshot`/`MarshalJSON` 输出的字段名与其反序列化要求保持一致。
-// PR-1 迁移完成前部分类型尚无调用点,允许 dead_code;PR-1 末尾去掉。
-#![allow(dead_code)]
 
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -35,6 +33,7 @@ impl<T> Envelope<T> {
 }
 
 /// `proxyzms_apply_config` 返回的 data(无 warning 时为 `true` 布尔,解析到 Option 即可)。
+#[allow(dead_code)] // PR-2 接 settings 配置校验后启用
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct ApplyResult {
     #[serde(default)]
@@ -42,6 +41,7 @@ pub struct ApplyResult {
 }
 
 /// `proxyzms_get_traffic` 的 data(瞬时 `Now()` 或累计 `Total()`)。
+#[allow(dead_code)] // PR-2 流量直读启用
 #[derive(Debug, Clone, Copy, Default, Deserialize)]
 pub struct Traffic {
     #[serde(default)]
@@ -51,6 +51,7 @@ pub struct Traffic {
 }
 
 /// `proxyzms_test_delay` 的 data;`delay <= 0` 表示超时/失败。
+#[allow(dead_code)] // PR-2 测速详情弹层启用
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct DelayResponse {
     #[serde(default)]
@@ -66,9 +67,11 @@ pub struct DelayResponse {
 }
 
 /// Go `emitEvent` 推过来的事件(目前只有 log;delay/stats 由 Rust 轮询兜底)。
+#[allow(dead_code)] // PR-2 事件流接线后启用
 #[derive(Debug, Clone)]
 pub enum CoreEvent {
     Log { level: String, payload: String },
 }
 
+#[allow(dead_code)] // PR-2 后移除或转用
 pub type SelectedMap = HashMap<String, String>;

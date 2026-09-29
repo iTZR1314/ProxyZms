@@ -77,23 +77,6 @@ impl Connection {
     }
 }
 
-/// `GET /configs` 中我们关心的部分。
-#[derive(Debug, Clone, Deserialize, PartialEq, Default)]
-pub struct Configs {
-    /// 代理模式:rule / global / direct
-    #[serde(default)]
-    pub mode: String,
-    /// TUN(虚拟网卡)设置
-    #[serde(default)]
-    pub tun: TunConfig,
-}
-
-#[derive(Debug, Clone, Deserialize, PartialEq, Default)]
-pub struct TunConfig {
-    #[serde(default)]
-    pub enable: bool,
-}
-
 /// `GET /proxies`:所有节点与策略组(用 BTreeMap 保证渲染顺序稳定)。
 #[derive(Debug, Clone, Deserialize, PartialEq, Default)]
 pub struct Proxies {
@@ -104,9 +87,10 @@ pub struct Proxies {
 /// 一个节点或策略组。策略组额外带 `now`(当前选择)与 `all`(成员)。
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub struct Proxy {
+    #[serde(default)]
     pub name: String,
-    #[serde(rename = "type")]
-    pub proxy_type: String,
+    #[serde(rename = "type", default)]
+    pub proxy_type: String, // 为空也接受:URLTest/Fallback/Selector 组若无 type 字段不丢
     #[serde(default)]
     pub now: String,
     #[serde(default)]

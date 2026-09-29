@@ -1,7 +1,6 @@
 use crate::config::AppConfig;
-use crate::mihomo::process;
 use crate::mihomo::types::Proxy;
-use crate::mihomo::{ApiClient, Controller};
+use crate::mihomo::kernel;
 use crate::node_notes;
 use crate::Telemetry;
 use dioxus::prelude::*;
@@ -11,18 +10,13 @@ use std::collections::{BTreeMap, HashSet};
 /// 整页高度恒定,不出外层滚动条;某组节点过多时,仅芯片区静默滚动(`.no-scrollbar`)。
 #[component]
 pub fn Nodes() -> Element {
-    let config = use_context::<Signal<AppConfig>>();
+    let mut config = use_context::<Signal<AppConfig>>();
     let tele = use_context::<Telemetry>();
     let mut testing = use_signal(HashSet::<String>::new);
     // 当前激活的策略组名;为 None 或不再存在时回退到首个组
     let mut active = use_signal(|| None::<String>);
 
-    let current_mode = tele
-        .configs
-        .read()
-        .as_ref()
-        .map(|c| c.mode.clone())
-        .unwrap_or_default();
+    let current_mode = tele.mode.read().clone();
     // 节点备注:直接读 config.yaml 里的注释(文件没变就走缓存,只 stat 一次)
     let notes = {
         let c = config.read();
@@ -73,14 +67,14 @@ pub fn Nodes() -> Element {
                                         "px-3 py-1.5 text-sm border border-neutral-300 text-neutral-700 hover:border-black transition-colors"
                                     },
                                     onclick: move |_| {
-                                        let (url, secret) = {
-                                            let c = config.read();
-                                            (c.controller_url.clone(), c.secret.clone())
-                                        };
+                                        let mode = val.to_string();
                                         spawn(async move {
-                                            let _ = ApiClient::new(url, secret).set_mode(val).await;
-                                            let mut poke = tele.poke;
-                                            poke.set(poke() + 1);
+                                            if kernel().set_mode(&mode).await.is_ok() {
+                                                let mut m = tele.mode;
+                                                m.set(mode.clone());
+                                                config.write().mode = mode;
+                                                let _ = config.read().save();
+                                            }
                                         });
                                     },
                                     "{label}"
@@ -155,13 +149,13 @@ pub fn Nodes() -> Element {
                                     disabled: is_testing,
                                     onclick: move |_| {
                                         let g = gname_test.clone();
-                                        let (url, secret) = {
-                                            let c = config.read();
-                                            (c.controller_url.clone(), c.secret.clone())
-                                        };
+                                        // 单节点逐一测速,完成后统一刷新(取代旧 /group/:name/delay REST)
+                                        let members: Vec<String> = group.all.clone();
                                         testing.write().insert(g.clone());
                                         spawn(async move {
-                                            let _ = ApiClient::new(url, secret).group_delay(&g).await;
+                                            for member in members.iter() {
+                                                let _ = kernel().test_delay(member, "", 3000).await;
+                                            }
                                             let mut poke = tele.poke;
                                             poke.set(poke() + 1);
                                             testing.write().remove(&g);
@@ -215,14 +209,13 @@ pub fn Nodes() -> Element {
                                                     onclick: move |_| {
                                                         let g = g.clone();
                                                         let m = m.clone();
-                                                        let (url, secret) = {
-                                                            let c = config.read();
-                                                            (c.controller_url.clone(), c.secret.clone())
-                                                        };
                                                         spawn(async move {
-                                                            let _ = ApiClient::new(url, secret).select_proxy(&g, &m).await;
-                                                            let mut poke = tele.poke;
-                                                            poke.set(poke() + 1);
+                                                            if kernel().select_proxy(&g, &m).await.is_ok() {
+                                                                config.write().selected_map.insert(g.clone(), m.clone());
+                                                                let _ = config.read().save();
+                                                                let mut poke = tele.poke;
+                                                                poke.set(poke() + 1);
+                                                            }
                                                         });
                                                     },
                                                     // 选中标记:未选中也占位,保证节点名左边界对齐
@@ -276,20 +269,15 @@ pub fn Nodes() -> Element {
     }
 }
 
-/// TUN 开关 + 授权按钮(放在状态头部)。与代理模式正交,自成一组。
-/// TUN 状态读写共享的 `TunState` 信号 —— 与系统托盘完全一致。
+/// TUN 开关(FFI 后不再需要授权按钮 — 主 App 内核跑在进程内,
+/// macOS utun 提权由独立 helper 子进程负责(PR-3 接),Windows 由 manifest 提权)。
 #[component]
 pub fn TunControls() -> Element {
-    let config = use_context::<Signal<AppConfig>>();
-    let controller = use_context::<Controller>();
+    let mut config = use_context::<Signal<AppConfig>>();
     // 共享 TUN 状态(与托盘同一信号)
     let mut tun_state = use_context::<crate::TunState>().0;
-    let auth_status = use_signal(|| None::<String>);
-    // 切换请求进行中:显示转圈,期间不被轮询的乐观/旧值干扰
     let mut tun_busy = use_signal(|| false);
 
-    // 二进制/进程是否已提权(决定 TUN 能否真正生效)
-    let elevated = process::is_elevated(&config.read().mihomo_path);
     let tun_on = tun_state();
     let busy = tun_busy();
 
@@ -310,16 +298,19 @@ pub fn TunControls() -> Element {
                     if tun_busy() {
                         return;
                     }
-                    let (url, secret) = {
-                        let c = config.read();
-                        (c.controller_url.clone(), c.secret.clone())
-                    };
                     let target = !tun_state();
                     tun_busy.set(true);
                     spawn(async move {
                         // 成功才落定状态(失败保持原状),全程不乐观更新
-                        if ApiClient::new(url, secret).set_tun(target).await.is_ok() {
+                        // PR-3 macOS helper 接通前:set_tun 在 darwin 上会因 utun EPERM 返回
+                        // 错误,UI 自然表现"点了没反应"(失败保持原状,符合语义)
+                        if kernel().set_tun(target).await.is_ok() {
                             tun_state.set(target);
+                            let mut cfg = config.write();
+                            cfg.tun_enable = target;
+                            let _ = cfg.save();
+                        } else {
+                            // 授权失败/取消:不给用户错觉,保持现状
                         }
                         tun_busy.set(false);
                     });
@@ -333,41 +324,6 @@ pub fn TunControls() -> Element {
                     "OFF"
                 }
             }
-            // 未提权时:一键授权(setuid root / UAC)
-            if !elevated {
-                button {
-                    class: "px-4 py-1.5 text-sm border border-[var(--accent)] text-[var(--accent)] hover:bg-[var(--accent)] hover:text-white transition-colors",
-                    onclick: move |_| {
-                        let path = config.read().mihomo_path.clone();
-                        let cfg = config.read().clone();
-                        let controller = controller.clone();
-                        let mut status = auth_status;
-                        status.set(Some("等待授权…".to_string()));
-                        spawn(async move {
-                            let res = tokio::task::spawn_blocking(move || {
-                                process::elevate_binary(&path)
-                            })
-                            .await;
-                            match res {
-                                Ok(Ok(())) => {
-                                    controller.stop();
-                                    match controller.start(&cfg) {
-                                        Ok(()) => status.set(Some("已授权".to_string())),
-                                        Err(e) => status.set(Some(format!("授权成功但重启失败:{e}"))),
-                                    }
-                                }
-                                Ok(Err(e)) => status.set(Some(e)),
-                                Err(_) => status.set(Some("授权任务异常".to_string())),
-                            }
-                        });
-                    },
-                    "授权"
-                }
-            }
-            if let Some(s) = auth_status() {
-                span { class: "text-xs text-neutral-500", "{s}" }
-            }
         }
     }
 }
-

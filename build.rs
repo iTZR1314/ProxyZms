@@ -107,10 +107,12 @@ fn build_go_core() {
     println!("cargo:rustc-link-search=native={}", out_dir.display());
     println!("cargo:rustc-link-lib=static=proxyzms_core");
     match goos {
-        // macOS:Go runtime 的 net/fsnotify 用到 CoreFoundation;Security 供 x509 系统根
+        // macOS:Go runtime 的 net/fsnotify 用到 CoreFoundation;Security 供 x509 系统根;
+        // resolv 供 Go DNS resolver(_res_9_ninit / _res_9_nclose 等)
         "darwin" => {
             println!("cargo:rustc-link-lib=framework=CoreFoundation");
             println!("cargo:rustc-link-lib=framework=Security");
+            println!("cargo:rustc-link-lib=resolv");
         }
         "windows" => {
             println!("cargo:rustc-link-lib=ws2_32"); // Go net

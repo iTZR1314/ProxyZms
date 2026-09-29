@@ -20,7 +20,6 @@ mod theme;
 mod views;
 
 use config::AppConfig;
-use mihomo::Controller;
 use mihomo::types;
 use std::collections::HashMap;
 use views::{ConnectionsView, Flow, Nodes, Settings};
@@ -29,12 +28,18 @@ use views::{ConnectionsView, Flow, Nodes, Settings};
 #[derive(Clone, Copy)]
 pub struct TunState(pub Signal<bool>);
 
+/// 控制台侧内核运行态 — 由 lifecycle.start 写,与 TunState 同一 Signal。
+#[derive(Clone, Copy)]
+pub struct KernelRunning(pub Signal<bool>);
+
 /// 控制器集中遥测:整个应用只跑下面的轮询循环,各视图从 context 共享读取,
 /// 不再各自重复轮询。动作后 bump `poke` 可让轮询立即重取一次。
 #[derive(Clone, Copy)]
 pub struct Telemetry {
     pub online: Signal<bool>,
-    pub configs: Signal<Option<types::Configs>>,
+    /// 代理模式(rule/global/direct)。**不再有 /configs 拉取**:
+    /// 由 set_mode 调用方在成功后直接更新;启动时读 config 持久化。
+    pub mode: Signal<String>,
     pub connections: Signal<Option<types::Connections>>,
     pub proxies: Signal<Option<types::Proxies>>,
     pub poke: Signal<u32>,
@@ -181,9 +186,17 @@ fn main() {
         return;
     }
 
-    // Ctrl-C / SIGTERM 时:先杀掉 mihomo 内核再退出(此路径不会触发 Drop)
+    // Ctrl-C / SIGTERM 时:通知内核 shutdown(Go 端 listener/executor 停)再退出。
+    // handler 中不能 await;停下窗口渲染前给一个短暂上限即可(shutdown 通常 <100ms)。
     let _ = ctrlc::set_handler(|| {
-        mihomo::process::kill_tracked();
+        if let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        {
+            // current_thread 不能跑 blocking task → 用一个短而急的 multi线程 runtime;
+            // 内核 FFI 都是 spawn_blocking 封装的,与 multi 兼容
+            let _ = rt.block_on(mihomo::kernel().shutdown());
+        }
         std::process::exit(0);
     });
 
@@ -419,11 +432,10 @@ fn tray_proxy_snapshot(proxies: Option<&types::Proxies>) -> TrayProxySnapshot {
 #[cfg(feature = "desktop")]
 fn handle_menu_select(
     id: &dioxus::desktop::muda::MenuId,
-    config: Signal<AppConfig>,
+    mut config: Signal<AppConfig>,
     mut tun_state: Signal<bool>,
     mut poke: Signal<u32>,
     proxy_actions: Signal<HashMap<String, (String, String)>>,
-    controller: &Controller,
     win: &dioxus::desktop::DesktopContext,
 ) {
     eprintln!("[zms] menu select: id={id:?}");
@@ -431,45 +443,46 @@ fn handle_menu_select(
         // 与托盘左击、macOS Reopen、单实例 IPC 共用同一个入口(顺序约束都在里面)
         show_main_window(win);
     } else if id == TRAY_TOGGLE_ID {
-        let (url, secret) = {
-            let c = config.read();
-            (c.controller_url.clone(), c.secret.clone())
-        };
         let target = !tun_state();
         spawn(async move {
             // 成功才落定共享状态(失败保持原状),不乐观更新,避免托盘/UI 图标跳变
-            if mihomo::ApiClient::new(url, secret).set_tun(target).await.is_ok() {
+            if mihomo::kernel().set_tun(target).await.is_ok() {
                 tun_state.set(target);
+                config.write().tun_enable = target;
             }
         });
     } else if let Some((group, name)) = proxy_actions.read().get(id.as_ref()).cloned() {
-        let (url, secret) = {
-            let c = config.read();
-            (c.controller_url.clone(), c.secret.clone())
-        };
         spawn(async move {
-            if mihomo::ApiClient::new(url, secret)
-                .select_proxy(&group, &name)
-                .await
-                .is_ok()
-            {
+            if mihomo::kernel().select_proxy(&group, &name).await.is_ok() {
+                config.write().selected_map.insert(group.clone(), name.clone());
+                let _ = config.read().save();
                 poke.set(poke() + 1);
             }
         });
     } else if id == TRAY_QUIT_ID {
         eprintln!("[zms] 退出:停止内核并退出程序");
-        controller.stop();
-        mihomo::process::kill_tracked();
+        // shutdown 完成后退出;Go 本体走 executor.Shutdown,
+        // 当前线程 1s 内若还没干净,也强 exit(不 hang)。
+        let _ = std::thread::Builder::new()
+            .name("ffi-shutdown".into())
+            .spawn(|| {
+                if let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                {
+                    let _ = rt.block_on(mihomo::kernel().shutdown());
+                }
+            })
+            .map(|t| t.join());
         std::process::exit(0);
     }
 }
 
 #[component]
 fn App() -> Element {
-    // 全局状态:配置(从磁盘加载)+ mihomo 进程控制器 + 共享 TUN 状态
+    // 全局状态:配置(从磁盘加载)+ 共享 TUN 状态(FFI 内核跑进程内,无需 Controller)
     let config = use_context_provider(|| Signal::new(AppConfig::load()));
-    use_context_provider(Controller::default);
-    let mut tun_state = use_context_provider(|| TunState(Signal::new(false))).0;
+    let tun_state = use_context_provider(|| TunState(Signal::new(false))).0;
     let mut window_focused = use_signal(|| true);
     #[cfg(feature = "desktop")]
     let mut tray_proxy_actions = use_signal(HashMap::<String, (String, String)>::new);
@@ -479,7 +492,7 @@ fn App() -> Element {
     // 集中遥测:所有视图共享读取,避免每个页面各自重复轮询
     let tele = use_context_provider(|| Telemetry {
         online: Signal::new(false),
-        configs: Signal::new(None),
+        mode: Signal::new(String::new()),
         connections: Signal::new(None),
         proxies: Signal::new(None),
         poke: Signal::new(0),
@@ -495,10 +508,13 @@ fn App() -> Element {
     });
 
     // 集中遥测:全应用仅有的两个控制器轮询循环。各视图改为从 `Telemetry` context
-    // 读取结果,避免每个页面各自重复打 /configs、/connections、/proxies。
+    // 读取结果,避免每个页面各自重复打 get_proxies、get_connections。
+    //
+    // FFI 后模型:**不再有 REST `/configs`** —— mode / TUN 状态由调用方成功后
+    // 直接写 TunState / tele.mode;connections / proxies 由下面两个 loop 统一拉。
     let Telemetry {
         mut online,
-        mut configs,
+        mode: _mode,
         mut connections,
         mut proxies,
         poke,
@@ -536,75 +552,43 @@ fn App() -> Element {
         }
     });
 
-    // (1) /connections 订阅:开一个长连 WebSocket,mihomo 1 Hz 主动推快照。
-    //     不再做 HTTP 轮询;断线 1 秒后自动重连(对齐 clash-verge 的 RECONNECT_DELAY_MS)。
-    //     断线时保留最后一帧 connections,只翻 online,UI 不抖到 0。
+    // (1) /connections 快照:每 1s 主动调 `kernel.get_connections()`(取代旧的
+    //     WebSocket 订阅)。kernel 不在线时清空 online 标记,本轮 connections 保留,
+    //     UI 不抖到 0(语义与旧 REST 一致)。
     use_future(move || async move {
-        use futures_util::StreamExt as _;
         loop {
-            // 仅在 connect 时读取一次配置;运行中若用户改了 URL/secret,
-            // 要等本次流终止才会用新值重连。
-            let (url, secret) = {
-                let c = config.read();
-                (c.controller_url.clone(), c.secret.clone())
-            };
-            let client = mihomo::ApiClient::new(url, secret);
-            match client.subscribe_connections().await {
-                Ok(mut stream) => {
+            match mihomo::kernel().get_connections().await {
+                Ok(c) => {
                     if !online() {
                         online.set(true);
                     }
-                    while let Some(msg) = stream.next().await {
-                        match msg {
-                            Ok(c) => connections.set(Some(c)),
-                            Err(_) => break, // 解析或传输出错 → 跳出去重连
-                        }
+                    connections.set(Some(c));
+                }
+                Err(e) => {
+                    if online() {
+                        online.set(false);
+                    }
+                    // 仅在内核尚未 init 时静默重试;真正连接失败时可加日志
+                    if !e.contains("not initialized") && !e.contains("内核未初始化") {
+                        eprintln!("[zms] get_connections: {e}");
                     }
                 }
-                Err(_) => { /* connect 失败,落入下面的 1s 重试 */ }
-            }
-            if online() {
-                online.set(false);
             }
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         }
     });
 
-    // (2) /configs + /proxies:每 2 秒一次(TUN 状态 + 代理模式 + 节点列表);
-    //     动作(切节点/测速/切模式)会 bump tele.poke,让本循环立即重取一次。
+    // (2) /proxies:每 2s 一次(poke 触发提前刷新)。**不再有 /configs**:
+    //     mode / TUN 由调用方在成功后直接更新;本循环只关心节点列表。
+    //
+    //     ⚠️ 第一个 set_tun/set_mode/select_proxy 调用前的首帧通常拿空 proxies,
+    //     Flow/Nodes 会在 lifecycle.start 完成后立刻 bump poke 刷新。
     use_future(move || async move {
-        let mut last_cfg: Option<AppConfig> = None;
-        let mut client: Option<mihomo::ApiClient> = None;
         let mut last_poke: u32 = poke();
         loop {
-            let cfg = config();
-            if last_cfg.as_ref() != Some(&cfg) {
-                client = Some(mihomo::ApiClient::new(
-                    cfg.controller_url.clone(),
-                    cfg.secret.clone(),
-                ));
-                last_cfg = Some(cfg);
-            }
-            let api = client.as_ref().unwrap();
-
-            match api.configs().await {
-                Ok(c) => {
-                    if tun_state() != c.tun.enable {
-                        tun_state.set(c.tun.enable);
-                    }
-                    configs.set(Some(c));
-                }
-                Err(_) => {
-                    if tun_state() {
-                        tun_state.set(false);
-                    }
-                }
-            }
-            if let Ok(p) = api.proxies().await {
+            if let Ok(p) = mihomo::kernel().get_proxies().await {
                 proxies.set(Some(p));
             }
-
-            // 睡 2 秒,期间一旦被 poke 就提前唤醒(动作后秒级刷新)
             for _ in 0..20 {
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                 if poke() != last_poke {
@@ -799,10 +783,8 @@ fn App() -> Element {
 
         // 托盘右键菜单事件:tray + muda 两个 hook 都注册(全局 handler 只有一个生效,
         // 不确定是哪个,故都挂上,共用 handle_menu_select)
-        let menu_ctrl = use_context::<Controller>();
         let win_menu = use_window();
         {
-            let ctrl = menu_ctrl.clone();
             let win = win_menu.clone();
             use_tray_menu_event_handler(move |e| {
                 handle_menu_select(
@@ -811,13 +793,11 @@ fn App() -> Element {
                     tun_state,
                     tele.poke,
                     tray_proxy_actions,
-                    &ctrl,
                     &win,
                 )
             });
         }
         {
-            let ctrl = menu_ctrl.clone();
             let win = win_menu.clone();
             use_muda_event_handler(move |e| {
                 handle_menu_select(
@@ -826,7 +806,6 @@ fn App() -> Element {
                     tun_state,
                     tele.poke,
                     tray_proxy_actions,
-                    &ctrl,
                     &win,
                 )
             });

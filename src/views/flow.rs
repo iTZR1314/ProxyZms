@@ -1,23 +1,17 @@
 //! 流量页(Flow,首页):扁平 Swiss 排版,平铺呈现运行状态 / IPv6 / TUN 开关 /
 //! 流量统计。
 //!
-//! 本页同时承载首启引导(下载内核/订阅)与内核自动启动 —— 由原"状态页"合并而来。
+//! 本页同时承载首启引导(下载订阅/启动内核)。FFI 内核不再下载二进制,
+//! 状态机由「下载 ⇄ 安装」变为「解析 ⇒ 应用 config ⇒ 启动」一条直路。
 
 use crate::bootstrap;
 use crate::config::AppConfig;
 use crate::format;
-use crate::mihomo::Controller;
+use crate::mihomo::kernel;
 use crate::Telemetry;
 use crate::views::TunControls;
 use dioxus::prelude::*;
 use std::time::Duration;
-
-/// 运行模式开关。
-///
-/// - `true` = **正常模式**:就绪后在后台真正拉起 mihomo 内核(发布行为)。
-/// - `false` = **UI 调试模式**:只跑界面,**不**真的启动内核,避免与你手动/另一实例
-///   已经跑着的内核抢占同一控制端口与控制权。调试 UI 时把它改成 `false` 即可。
-const NORMAL_MODE: bool = true;
 
 /// 检测当前网络是否拥有可路由的全局 IPv6 出口。
 ///
@@ -45,15 +39,14 @@ fn check_ipv6() -> bool {
 #[derive(Clone, PartialEq)]
 enum Setup {
     Checking,
-    Downloading { done: u64, total: Option<u64> },
+    Applying { progress: String },
     Ready,
     Failed(String),
 }
 
 #[component]
 pub fn Flow() -> Element {
-    let mut config = use_context::<Signal<AppConfig>>();
-    let controller = use_context::<Controller>();
+    let config = use_context::<Signal<AppConfig>>();
     let tele = use_context::<Telemetry>();
     let online = tele.online;
     let connections = tele.connections;
@@ -80,69 +73,88 @@ pub fn Flow() -> Element {
         }
     });
 
-    // 引导流程:首启检查 → 必要时下载二进制与订阅 → 写入托管路径 → 就绪
+    // 引导流程:env=DIOXUS_NO_KERNEL ⇒ 跳过(供 UI 调试);否则初始化 → apply_config
     use_future(move || async move {
-        let managed_bin = bootstrap::binary_path().to_string_lossy().into_owned();
-        let current = config.read().mihomo_path.clone();
-        if !current.trim().is_empty() && current != managed_bin {
+        // UI 调试:不拉起内核,跳过订阅下载 — 用来跑 dx serve 调样式
+        if std::env::var_os("DIOXUS_NO_KERNEL").is_some() {
             setup.set(Setup::Ready);
             return;
         }
 
-        if !bootstrap::is_installed() {
-            setup.set(Setup::Downloading { done: 0, total: None });
-            if let Err(e) = bootstrap::download_binary(move |done, total| {
-                setup.set(Setup::Downloading { done, total });
-            })
-            .await
-            {
+        // 1) 订阅 config.yaml 不存在 / 设置了订阅 URL,先下载
+        let sub = config.read().subscription_url.clone();
+        setup.set(Setup::Applying {
+            progress: if sub.trim().is_empty() {
+                "应用内置默认配置…".to_string()
+            } else {
+                "下载订阅…".to_string()
+            },
+        });
+
+        if !bootstrap::config_path().exists() && !sub.trim().is_empty() {
+            if let Err(e) = bootstrap::write_subscription(&sub).await {
+                setup.set(Setup::Failed(format!("下载订阅失败:{e}")));
+                return;
+            }
+        }
+        let yaml = match bootstrap::read_config() {
+            Ok(y) => y,
+            Err(e) => {
                 setup.set(Setup::Failed(e));
+                return;
+            }
+        };
+
+        // 2) init 内核 home 目录(mihomo 的 -d 等价)
+        let home = bootstrap::data_dir();
+        setup.set(Setup::Applying {
+            progress: "初始化内核…".to_string(),
+        });
+        if let Err(e) = kernel().init(&home).await {
+            setup.set(Setup::Failed(format!("内核初始化失败:{e}")));
+            return;
+        }
+
+        // 3) 应用 config(Go 端 UnmarshalRawConfig + ParseRawConfig + Listener 重建)
+        let selected_map = config.read().selected_map.clone();
+        setup.set(Setup::Applying {
+            progress: "应用代理配置…".to_string(),
+        });
+        match kernel().apply_config(&yaml, &selected_map).await {
+            Ok(Some(warning)) if !warning.is_empty() => {
+                // mihomo 内部走了 default config 兜底,提示但不阻塞
+                error.set(Some(format!("配置应用走默认兜底:{warning}")));
+            }
+            Ok(_) => {}
+            Err(e) => {
+                setup.set(Setup::Failed(format!("应用配置失败:{e}")));
                 return;
             }
         }
 
-        let (sub, ec_url, secret) = {
-            let c = config.read();
-            (
-                c.subscription_url.clone(),
-                c.controller_url.clone(),
-                c.secret.clone(),
-            )
-        };
-        let result = if !bootstrap::config_path().exists() {
-            if sub.trim().is_empty() {
-                bootstrap::ensure_config(&ec_url, &secret)
-            } else {
-                bootstrap::fetch_config(&sub, &ec_url, &secret).await
-            }
-        } else {
-            bootstrap::reassert_control(&ec_url, &secret)
-        };
-        if let Err(e) = result {
-            setup.set(Setup::Failed(e));
-            return;
+        // 4) 恢复用户持久化的 mode / log_level / catalog(仅当下发不 chang rust TUN)
+        let persisted = config.read().clone();
+        if !persisted.mode.trim().is_empty() && persisted.mode != "rule" {
+            let _ = kernel().set_mode(&persisted.mode).await;
         }
+        let mut mode_sig = tele.mode;
+        if !persisted.mode.trim().is_empty() {
+            mode_sig.set(persisted.mode.clone());
+        } else if let Ok(m) = kernel().get_mode().await {
+            mode_sig.set(m);
+        }
+        if !persisted.log_level.trim().is_empty() {
+            let _ = kernel().set_log_level(&persisted.log_level).await;
+        }
+        // TUN 不在启动时自动开启 — macOS 需 helper 授权,用户点 ON 时才走提权流程
 
-        {
-            let mut cfg = config.write();
-            cfg.mihomo_path = managed_bin;
-            cfg.work_dir = bootstrap::data_dir().to_string_lossy().into_owned();
-        }
-        let _ = config.read().save();
         setup.set(Setup::Ready);
     });
 
-    // 就绪后自动启动一次(同步,避免跨 await 持有进程句柄)
-    let controller_effect = controller.clone();
+    // FFI 内核是 spawn_blocking 调用,无 "start 进程" 概念;started 只作幂等锁
     use_effect(move || {
         if setup() == Setup::Ready && !started() {
             started.set(true);
-            // UI 调试模式(NORMAL_MODE = false)下不拉起内核,避免与已运行的内核冲突。
-            if NORMAL_MODE {
-                if let Err(e) = controller_effect.start(&config.read()) {
-                    error.set(Some(format!("启动失败:{e}")));
-                }
-            }
         }
     });
 
@@ -159,31 +171,13 @@ pub fn Flow() -> Element {
                 }
             };
         }
-        Setup::Downloading { done, total } => {
-            let pct = total
-                .filter(|t| *t > 0)
-                .map(|t| (done as f64 / t as f64 * 100.0).round() as u64);
-            let detail = match total {
-                Some(t) => format!("{} / {}", format::bytes(done), format::bytes(t)),
-                None => format::bytes(done),
-            };
+        Setup::Applying { progress } => {
             return rsx! {
                 SetupScreen {
-                    eyebrow: "First Run · Downloading",
-                    title: "正在下载 mihomo",
+                    eyebrow: "Bootstrap · Applying",
+                    title: "正在启动内核",
                     body: rsx! {
-                        div { class: "flex items-baseline gap-3",
-                            span { class: "text-7xl font-bold tracking-tighter tabular-nums leading-none",
-                                if let Some(p) = pct { "{p}" } else { "—" }
-                            }
-                            if pct.is_some() {
-                                span { class: "text-2xl font-bold text-[var(--accent)]", "%" }
-                            }
-                        }
-                        div { class: "mt-6 h-1 bg-neutral-200",
-                            div { class: "h-full bg-[var(--accent)] transition-all", style: "width: {pct.unwrap_or(0)}%" }
-                        }
-                        p { class: "mt-3 text-xs uppercase tracking-[0.15em] text-neutral-500 tabular-nums", "{detail}" }
+                        p { class: "text-sm text-neutral-500", "{progress}" }
                     },
                 }
             };
@@ -192,7 +186,7 @@ pub fn Flow() -> Element {
             return rsx! {
                 SetupScreen {
                     eyebrow: "Error",
-                    title: "下载失败",
+                    title: "内核启动失败",
                     body: rsx! {
                         p { class: "text-sm text-neutral-600 break-words max-w-md", "{msg}" }
                         button {

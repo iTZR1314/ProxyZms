@@ -6,8 +6,6 @@
 //!
 //! 事件回调:Go 通过 C 跳板(`core/callback.c`)调回 Rust;回调里只做
 //! `strdup` 到 mpsc,不做任何 await / 锁,保证 Go 统计循环不被 Rust 卡住。
-// PR-1 迁移完成前这些方法在 UI 端尚无调用点,允许 dead_code;PR-1 末尾去掉。
-#![allow(dead_code)]
 
 use std::collections::HashMap;
 use std::ffi::{CStr, CString};
@@ -21,6 +19,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 // Go c-archive 导出(见 libproxyzms_core.h / bridge.go)。Rust 2021:
 // extern 块不标 unsafe,unsafe 只标在调用点。
+#[allow(dead_code)] // PR-2 事件流接线后逐个放开
 extern "C" {
     fn proxyzms_set_event_callback(cb: EventCallback, user_data: *mut c_void);
     fn proxyzms_init(home_dir: *mut c_char) -> *mut c_char;
@@ -46,6 +45,7 @@ extern "C" {
     fn proxyzms_free_string(s: *mut c_char);
 }
 
+#[allow(dead_code)]
 type EventCallback = Option<unsafe extern "C" fn(*const c_char, *mut c_void)>;
 
 fn c_string(s: &str) -> Result<CString, String> {
@@ -87,6 +87,7 @@ where
 
 /// 全局内核句柄。仅一个实例(进程=内核),通过 [`kernel`] 获取。
 pub struct Kernel {
+    #[allow(dead_code)] // PR-2 事件流接线后放开
     events: Arc<Mutex<Option<UnboundedSender<CoreEvent>>>>,
 }
 
@@ -102,6 +103,7 @@ pub fn kernel() -> &'static Kernel {
     })
 }
 
+#[allow(dead_code)]
 unsafe extern "C" fn on_event(json: *const c_char, _user_data: *mut c_void) {
     if json.is_null() {
         return;
@@ -141,6 +143,7 @@ impl From<CoreEventWire> for CoreEvent {
 
 impl Kernel {
     /// 注册内核事件流(log 等)。重复调用会替换旧 sender。
+    #[allow(dead_code)] // PR-2 事件流接线后放开
     pub fn set_event_sender(&self, tx: UnboundedSender<CoreEvent>) {
         if let Ok(mut guard) = self.events.lock() {
             *guard = Some(tx);
@@ -151,7 +154,7 @@ impl Kernel {
     }
 
     /// `init(home_dir)`:仅设 `constant.SetHomeDir`,不启动任何 listener。
-    pub async fn init(home_dir: &Path) -> Result<(), String> {
+    pub async fn init(&self, home_dir: &Path) -> Result<(), String> {
         let home = c_string(&home_dir.to_string_lossy())?;
         blocking(move || unsafe { parse_envelope(&read_json(|| proxyzms_init(home.into_raw()))?) })
             .await
@@ -187,6 +190,8 @@ impl Kernel {
             .map(|_: bool| ())
     }
 
+    /// 内核是否处于 running(已 init + apply_config 过)。PR-2 lifecycle 用。
+    #[allow(dead_code)]
     pub async fn is_running(&self) -> Result<bool, String> {
         blocking(|| unsafe { parse_envelope(&read_json(|| proxyzms_is_running())?) }).await
     }
@@ -221,7 +226,8 @@ impl Kernel {
         .map(|_: bool| ())
     }
 
-    /// 校验 YAML 能否被 mihomo 解析(不应用)。
+    /// 校验 YAML 能否被 mihomo 解析(不应用)。PR-2 settings "测试配置"按钮用。
+    #[allow(dead_code)]
     pub async fn validate_config(&self, yaml: &str) -> Result<(), String> {
         let yaml = c_string(yaml)?;
         blocking(move || unsafe {
@@ -269,6 +275,8 @@ impl Kernel {
         blocking(|| unsafe { parse_envelope(&read_json(|| proxyzms_get_connections())?) }).await
     }
 
+    /// 关闭单条连接。PR-2 connections 页"关闭"按钮用。
+    #[allow(dead_code)]
     pub async fn close_connection(&self, id: &str) -> Result<(), String> {
         let id = c_string(id)?;
         blocking(move || unsafe {
@@ -279,6 +287,8 @@ impl Kernel {
     }
 
     /// 流量:`total = true` 走 `Total()`(累计),false 走 `Now()`(当前速率)。
+    /// PR-2 用 `Now()` 直接驱动流量曲线(取代 connections 差分)。
+    #[allow(dead_code)]
     pub async fn get_traffic(&self, total: bool) -> Result<Traffic, String> {
         blocking(move || unsafe {
             parse_envelope(&read_json(|| proxyzms_get_traffic(if total { 1 } else { 0 }))?)
@@ -287,6 +297,8 @@ impl Kernel {
     }
 
     /// 触发 proxy/rule provider 立即更新(走 mihomo `Update()`,会上网拉新)。
+    /// PR-2 用"订阅重载"按钮:不必下载整个 yaml,只让 provider 自己上网。
+    #[allow(dead_code)]
     pub async fn update_subscription(&self, name: &str) -> Result<(), String> {
         let name = c_string(name)?;
         blocking(move || unsafe {
