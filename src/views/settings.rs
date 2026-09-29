@@ -1,6 +1,8 @@
 use crate::autostart;
 use crate::bootstrap;
 use crate::config::AppConfig;
+#[cfg(target_os = "macos")]
+use crate::helper;
 use crate::mihomo::kernel;
 use dioxus::prelude::*;
 
@@ -17,6 +19,12 @@ pub fn Settings() -> Element {
     let mut updating = use_signal(|| false);
     let mut restart_status = use_signal(|| None::<String>);
     let mut restarting = use_signal(|| false);
+    #[cfg(target_os = "macos")]
+    let mut helper_status = use_signal(|| None::<String>);
+    #[cfg(target_os = "macos")]
+    let mut helper_busy = use_signal(|| false);
+    #[cfg(target_os = "macos")]
+    let mut helper_installed = use_signal(helper::is_installed);
 
     // 下载订阅 → 写 config.yaml → apply_config(新内核直接接管,无需重启进程)
     let update_sub = move |_| {
@@ -94,6 +102,50 @@ pub fn Settings() -> Element {
         saved.set(true);
     };
 
+    // macOS:安装 root helper(AppleScript 弹密码,launchd 常驻)
+    #[cfg(target_os = "macos")]
+    let install_helper = move |_| {
+        if helper_busy() {
+            return;
+        }
+        helper_busy.set(true);
+        helper_status.set(Some("等待授权…".to_string()));
+        spawn(async move {
+            let res = tokio::task::spawn_blocking(helper::install).await;
+            match res {
+                Ok(Ok(())) => {
+                    helper_status.set(Some("已安装(launchd 常驻)".to_string()));
+                    helper_installed.set(true);
+                }
+                Ok(Err(e)) => helper_status.set(Some(e)),
+                Err(_) => helper_status.set(Some("安装任务异常".to_string())),
+            }
+            helper_busy.set(false);
+        });
+    };
+
+    // macOS:卸载 root helper(停 launchd + 删二进制/plist/socket)
+    #[cfg(target_os = "macos")]
+    let uninstall_helper = move |_| {
+        if helper_busy() {
+            return;
+        }
+        helper_busy.set(true);
+        helper_status.set(Some("等待授权…".to_string()));
+        spawn(async move {
+            let res = tokio::task::spawn_blocking(helper::uninstall).await;
+            match res {
+                Ok(Ok(())) => {
+                    helper_status.set(Some("已卸载".to_string()));
+                    helper_installed.set(false);
+                }
+                Ok(Err(e)) => helper_status.set(Some(e)),
+                Err(_) => helper_status.set(Some("卸载任务异常".to_string())),
+            }
+            helper_busy.set(false);
+        });
+    };
+
     rsx! {
         // 满高列布局 + 内容溢出时纵向滚动
         div { class: "h-full px-6 md:px-12 py-6 max-w-3xl mx-auto flex flex-col gap-6 overflow-y-auto",
@@ -160,6 +212,42 @@ pub fn Settings() -> Element {
                             span { class: "text-xs text-neutral-600", "{s}" }
                         }
                     }
+                }
+            }
+
+            // macOS root helper 区块(TUN 依赖;launchd 常驻)
+            if cfg!(target_os = "macos") {
+                section {
+                div { class: "text-[11px] uppercase tracking-[0.2em] text-[var(--accent)] border-b border-black pb-2 mb-4", "03 / macOS Helper" }
+                div { class: "space-y-4",
+                    div { class: "text-xs text-neutral-600 leading-relaxed",
+                        "TUN 模式在 macOS 上需要 root 权限建立 utun 虚拟网卡。本程序通过独立的 \
+                         root helper 子进程 + 文件描述符传递(SCM_RIGHTS)实现,主 App 全程不提权。\
+                         首次开启 TUN 时会弹一次密码框安装 helper,之后 launchd 常驻无需再授权。"
+                    }
+                    div { class: "flex items-center gap-4 pt-1",
+                        if helper_installed() {
+                            button {
+                                class: "px-6 py-2 border border-neutral-400 text-neutral-600 text-sm uppercase tracking-[0.15em] hover:border-[var(--accent)] hover:text-[var(--accent)] disabled:opacity-40 transition-colors",
+                                disabled: helper_busy(),
+                                onclick: uninstall_helper,
+                                if helper_busy() { "处理中…" } else { "卸载 Helper" }
+                            }
+                            span { class: "text-xs text-neutral-500", "已安装" }
+                        } else {
+                            button {
+                                class: "px-6 py-2 border border-[var(--accent)] text-[var(--accent)] text-sm uppercase tracking-[0.15em] hover:bg-[var(--accent)] hover:text-white disabled:opacity-40 transition-colors",
+                                disabled: helper_busy(),
+                                onclick: install_helper,
+                                if helper_busy() { "处理中…" } else { "安装 Helper" }
+                            }
+                            span { class: "text-xs text-neutral-500", "未安装(开 TUN 时会自动装)" }
+                        }
+                        if let Some(s) = helper_status() {
+                            span { class: "text-xs text-neutral-500", "{s}" }
+                        }
+                    }
+                }
                 }
             }
 

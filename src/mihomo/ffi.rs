@@ -220,7 +220,6 @@ impl Kernel {
 
     /// 注入 macOS helper 建的 utun fd。下一次 `set_tun(true)` 将接管它。
     /// fd <0 清除注入(回到自创建路径,需 root)。
-    #[allow(dead_code)] // PR-3 helper SCM_RIGHTS 接通后启用
     pub async fn adopt_tun_fd(&self, fd: i32) -> Result<(), String> {
         blocking(move || unsafe { parse_envelope(&read_json(|| proxyzms_adopt_tun(fd))?) })
             .await

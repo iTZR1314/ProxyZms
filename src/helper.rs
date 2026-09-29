@@ -271,7 +271,6 @@ pub fn install() -> Result<(), String> {
 
 /// 卸载 helper:停 launchd 服务 + 删二进制和 plist。
 /// 设置页"卸载 root helper"按钮用;同样要 AppleScript 提权。
-#[allow(dead_code)] // PR-3 收尾接 settings UI 后启用
 pub fn uninstall() -> Result<(), String> {
     let bin_dst = install_bin_path();
     let plist_dst = install_plist_path();

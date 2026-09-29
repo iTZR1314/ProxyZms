@@ -35,6 +35,15 @@ jobs:
         with:
           components: clippy
 
+      # FFI 内核是 Go 编成的 c-archive 静态库;build.rs 会跑 go build。
+      # macos-14 / windows-latest 镜像自带 Go 但版本不齐,钉死 1.25 保证可复现。
+      - name: Install Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.25.x'
+          cache: true
+          cache-dependency-path: core/go.sum
+
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
         with:
