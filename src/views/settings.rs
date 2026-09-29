@@ -26,10 +26,13 @@ pub fn Settings() -> Element {
         updating.set(true);
         sub_status.set(None);
         spawn(async move {
-            let url = config.read().subscription_url.clone();
-            match bootstrap::write_subscription(&url).await {
+            let (url, work_dir) = {
+                let c = config.read();
+                (c.subscription_url.clone(), c.work_dir.clone())
+            };
+            match bootstrap::write_subscription(&url, &work_dir).await {
                 Ok(()) => {
-                    let yaml = match bootstrap::read_config() {
+                    let yaml = match bootstrap::read_config(&work_dir) {
                         Ok(y) => y,
                         Err(e) => {
                             sub_status.set(Some(e));
@@ -60,14 +63,16 @@ pub fn Settings() -> Element {
         restarting.set(true);
         restart_status.set(Some("停止内核…".to_string()));
         spawn(async move {
+            let work_dir = config.read().work_dir.clone();
             let _ = kernel().shutdown().await;
             restart_status.set(Some("重新初始化…".to_string()));
-            if let Err(e) = kernel().init(&bootstrap::data_dir()).await {
+            let home = bootstrap::effective_data_dir(&work_dir);
+            if let Err(e) = kernel().init(&home).await {
                 restart_status.set(Some(format!("初始化失败:{e}")));
                 restarting.set(false);
                 return;
             }
-            let yaml = match bootstrap::read_config() {
+            let yaml = match bootstrap::read_config(&work_dir) {
                 Ok(y) => y,
                 Err(e) => {
                     restart_status.set(Some(e));

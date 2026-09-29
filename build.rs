@@ -128,4 +128,40 @@ fn build_go_core() {
     println!("cargo:rerun-if-env-changed=GO");
     println!("cargo:rerun-if-env-changed=GOFLAGS");
     println!("cargo:rerun-if-env-changed=GOPROXY");
+
+    // macOS:同时构建 root helper(`core/helper`),主程序 include_bytes! 嵌入。
+    // 若构建失败则写 0 字节占位,`helper::is_installable()` 返回 false,
+    // UI 上明确指引而不是 panic(helper 仅在用户点 TUN ON 时才需要)。
+    #[cfg(target_os = "macos")]
+    build_helper(&out_dir, &go, goos, goarch);
+}
+
+/// macOS root helper 子进程(独立二进制,launchd 拉起)。
+/// 构建失败不 panic —— helper 只在 macOS TUN 场景需要,允许开发机缺 Go 时
+/// 仍然能编译主程序;运行时 `is_installable()` 会把它翻译成用户可读错误。
+#[cfg(target_os = "macos")]
+fn build_helper(out_dir: &Path, go: &str, goos: &str, goarch: &str) {
+    let out = out_dir.join("proxyzms-helper");
+    let manifest = env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR unset");
+    let helper_dir = Path::new(&manifest).join("core").join("helper");
+
+    let status = Command::new(go)
+        .current_dir(&helper_dir)
+        .args(["build", "-ldflags", "-s -w -buildid="])
+        .arg("-o")
+        .arg(&out)
+        .arg(".")
+        .env("CGO_ENABLED", "1")
+        .env("GOOS", goos)
+        .env("GOARCH", goarch)
+        .status();
+
+    match status {
+        Ok(s) if s.success() => {}
+        _ => {
+            // 失败:写占位,主程序能编译但 is_installable()=false
+            eprintln!("[build] proxyzms-helper 构建失败;macOS TUN 将不可用(可重跑 cargo build 重试)");
+            let _ = std::fs::write(&out, b"");
+        }
+    }
 }

@@ -125,6 +125,14 @@ func proxyzms_set_tun(enable C.int) *C.char {
 	return okBool(true)
 }
 
+//export proxyzms_adopt_tun
+func proxyzms_adopt_tun(fd C.int) *C.char {
+	if err := adoptTunFD(int(fd)); err != nil {
+		return errPayload(err)
+	}
+	return okBool(true)
+}
+
 //export proxyzms_set_log_level
 func proxyzms_set_log_level(level *C.char) *C.char {
 	if err := setLogLevel(C.GoString(level)); err != nil {

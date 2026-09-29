@@ -14,6 +14,7 @@ dependencies = [
  "flate2",
  "futures-util",
  "image",
+ "nix",
  "objc",
  "reqwest 0.13.4",
  "serde",
@@ -3403,6 +3404,7 @@ dependencies = [
  "cfg-if",
  "cfg_aliases",
  "libc",
+ "memoffset",
 ]
 
 [[package]]

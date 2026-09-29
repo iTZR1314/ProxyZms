@@ -27,6 +27,8 @@ base64 = "0.23.1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc = "0.2"
+# SCM_RIGHTS fd 传递(helper → 主程序);nix 已通过 ctrlc 间接引入,这里显式声明
+nix = { version = "0.31", default-features = false, features = ["socket", "uio"] }
 
 # Windows 构建时只嵌 requireAdministrator 清单(不带 VERSION,避免与 dx 的资源冲突)
 [target.'cfg(windows)'.build-dependencies]

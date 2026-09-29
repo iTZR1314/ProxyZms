@@ -13,6 +13,8 @@ mod autostart;
 mod bootstrap;
 mod config;
 mod format;
+#[cfg(target_os = "macos")]
+mod helper;
 mod mihomo;
 mod node_notes;
 #[cfg(feature = "desktop")]
@@ -31,6 +33,11 @@ pub struct TunState(pub Signal<bool>);
 /// 控制台侧内核运行态 — 由 lifecycle.start 写,与 TunState 同一 Signal。
 #[derive(Clone, Copy)]
 pub struct KernelRunning(pub Signal<bool>);
+
+/// 内核生命周期(init/shutdown/TUN helper 注入)。与 `kernel()` 全局 FFI 句柄
+/// 不同:它额外知道当前 work_dir / running 状态,并在 macOS 上接 helper 拿 fd。
+#[derive(Clone)]
+pub struct Lifecycle(pub mihomo::KernelLifecycle);
 
 /// 控制器集中遥测:整个应用只跑下面的轮询循环,各视图从 context 共享读取,
 /// 不再各自重复轮询。动作后 bump `poke` 可让轮询立即重取一次。
@@ -436,6 +443,7 @@ fn handle_menu_select(
     mut tun_state: Signal<bool>,
     mut poke: Signal<u32>,
     proxy_actions: Signal<HashMap<String, (String, String)>>,
+    lifecycle: &Lifecycle,
     win: &dioxus::desktop::DesktopContext,
 ) {
     eprintln!("[zms] menu select: id={id:?}");
@@ -444,9 +452,11 @@ fn handle_menu_select(
         show_main_window(win);
     } else if id == TRAY_TOGGLE_ID {
         let target = !tun_state();
+        let lc = lifecycle.clone();
         spawn(async move {
+            let cfg = config.read().clone();
             // 成功才落定共享状态(失败保持原状),不乐观更新,避免托盘/UI 图标跳变
-            if mihomo::kernel().set_tun(target).await.is_ok() {
+            if lc.0.set_tun(target, &cfg).await.is_ok() {
                 tun_state.set(target);
                 config.write().tun_enable = target;
             }
@@ -483,6 +493,8 @@ fn App() -> Element {
     // 全局状态:配置(从磁盘加载)+ 共享 TUN 状态(FFI 内核跑进程内,无需 Controller)
     let config = use_context_provider(|| Signal::new(AppConfig::load()));
     let tun_state = use_context_provider(|| TunState(Signal::new(false))).0;
+    use_context_provider(|| KernelRunning(Signal::new(false)));
+    use_context_provider(|| Lifecycle(mihomo::KernelLifecycle::default()));
     let mut window_focused = use_signal(|| true);
     #[cfg(feature = "desktop")]
     let mut tray_proxy_actions = use_signal(HashMap::<String, (String, String)>::new);
@@ -784,7 +796,9 @@ fn App() -> Element {
         // 托盘右键菜单事件:tray + muda 两个 hook 都注册(全局 handler 只有一个生效,
         // 不确定是哪个,故都挂上,共用 handle_menu_select)
         let win_menu = use_window();
+        let lifecycle = use_context::<Lifecycle>();
         {
+            let lc = lifecycle.clone();
             let win = win_menu.clone();
             use_tray_menu_event_handler(move |e| {
                 handle_menu_select(
@@ -793,11 +807,13 @@ fn App() -> Element {
                     tun_state,
                     tele.poke,
                     tray_proxy_actions,
+                    &lc,
                     &win,
                 )
             });
         }
         {
+            let lc = lifecycle.clone();
             let win = win_menu.clone();
             use_muda_event_handler(move |e| {
                 handle_menu_select(
@@ -806,6 +822,7 @@ fn App() -> Element {
                     tun_state,
                     tele.poke,
                     tray_proxy_actions,
+                    &lc,
                     &win,
                 )
             });

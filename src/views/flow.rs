@@ -91,13 +91,14 @@ pub fn Flow() -> Element {
             },
         });
 
-        if !bootstrap::config_path().exists() && !sub.trim().is_empty() {
-            if let Err(e) = bootstrap::write_subscription(&sub).await {
+        let work_dir = config.read().work_dir.clone();
+        if !bootstrap::effective_config_path(&work_dir).exists() && !sub.trim().is_empty() {
+            if let Err(e) = bootstrap::write_subscription(&sub, &work_dir).await {
                 setup.set(Setup::Failed(format!("下载订阅失败:{e}")));
                 return;
             }
         }
-        let yaml = match bootstrap::read_config() {
+        let yaml = match bootstrap::read_config(&work_dir) {
             Ok(y) => y,
             Err(e) => {
                 setup.set(Setup::Failed(e));
@@ -105,8 +106,8 @@ pub fn Flow() -> Element {
             }
         };
 
-        // 2) init 内核 home 目录(mihomo 的 -d 等价)
-        let home = bootstrap::data_dir();
+        // 2) init 内核 home 目录(mihomo 的 -d 等价;work_dir 覆盖生效)
+        let home = bootstrap::effective_data_dir(&work_dir);
         setup.set(Setup::Applying {
             progress: "初始化内核…".to_string(),
         });

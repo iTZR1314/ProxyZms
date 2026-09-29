@@ -300,17 +300,16 @@ pub fn TunControls() -> Element {
                     }
                     let target = !tun_state();
                     tun_busy.set(true);
+                    let lc = use_context::<crate::Lifecycle>();
                     spawn(async move {
-                        // 成功才落定状态(失败保持原状),全程不乐观更新
-                        // PR-3 macOS helper 接通前:set_tun 在 darwin 上会因 utun EPERM 返回
-                        // 错误,UI 自然表现"点了没反应"(失败保持原状,符合语义)
-                        if kernel().set_tun(target).await.is_ok() {
+                        let cfg_snapshot = config.read().clone();
+                        // 成功才落定状态(失败保持原状),全程不乐观更新。
+                        // macOS:helper 未安装或 fd 注入失败 → Err 弹出(保持 OFF)
+                        if lc.0.set_tun(target, &cfg_snapshot).await.is_ok() {
                             tun_state.set(target);
                             let mut cfg = config.write();
                             cfg.tun_enable = target;
                             let _ = cfg.save();
-                        } else {
-                            // 授权失败/取消:不给用户错觉,保持现状
                         }
                         tun_busy.set(false);
                     });

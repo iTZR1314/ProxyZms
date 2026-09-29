@@ -105,6 +105,22 @@ func setTun(enable bool) error {
 	return nil
 }
 
+// adoptTunFD:macOS helper 注入的外部 utun fd。写入 currentConfig.General.Tun.FileDescriptor,
+// 使得下一次 setTun(true) 走"接管既有 fd"路径而不是自己 connect(utun_control).
+// fd <0 表示清除(回到自创建路径——需要 root)。idempotent。
+func adoptTunFD(fd int) error {
+	if err := ensureInit(); err != nil {
+		return err
+	}
+	configMu.Lock()
+	defer configMu.Unlock()
+	if currentConfig == nil || currentConfig.General == nil {
+		return errors.New("config not applied")
+	}
+	currentConfig.General.Tun.FileDescriptor = fd
+	return nil
+}
+
 // updateListenersLocked 与 FlClash common.go updateListeners 等价（去掉 features.Android 判断）。
 func updateListenersLocked(cfg *config.Config) {
 	if cfg == nil {
