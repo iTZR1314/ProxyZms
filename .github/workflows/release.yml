@@ -53,7 +53,9 @@ jobs:
 
       - name: Verify Clang for Windows cgo
         if: runner.os == 'Windows'
-        run: clang --version
+        run: |
+          clang --version
+          lld-link --version
 
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2

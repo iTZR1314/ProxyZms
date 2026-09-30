@@ -40,8 +40,9 @@ fn go_target() -> (&'static str, &'static str) {
     (goos, goarch)
 }
 
-/// Windows c-archive 必须用 MSVC ABI 的 Clang 产物,否则 link.exe 会因 Go/MinGW
-/// 的 `.pdata` unwind 格式不兼容而报 LNK1223。Go 的 CC 支持在命令后附 target 参数。
+/// Windows c-archive 使用 MSVC ABI 的 Clang 产物。Cargo 项目配置让 Rust 使用
+/// lld-link:MSVC link.exe 会拒绝 Go linker 生成的 `.pdata`(LNK1223)。
+/// Go 的 CC 支持在命令后附 target 参数。
 fn go_cc(goos: &str, goarch: &str) -> Option<String> {
     if goos == "windows" {
         let target = match goarch {
