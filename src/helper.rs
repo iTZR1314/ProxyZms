@@ -21,10 +21,15 @@ use std::os::unix::io::{AsRawFd, RawFd};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 
+extern "C" {
+    fn getuid() -> u32;
+}
+
 /// helper 的 unix socket 路径(必须与 `core/helper/main.go` 的默认值一致)。
 pub const SOCKET_PATH: &str = "/var/run/proxyzms-helper.sock";
 /// launchd 服务名。
 pub const HELPER_LABEL: &str = "top.zhoumaosen.ProxyZms.Helper";
+const HELPER_PROTOCOL_VERSION: u32 = 2;
 /// helper 安装目标(launchd 约定目录,只 root 可写)。
 const INSTALL_BIN_DIR: &str = "/Library/PrivilegedHelperTools";
 /// LaunchDaemon plist 安装目标。
@@ -59,15 +64,17 @@ pub fn is_installed() -> bool {
 /// 探测 helper 存活。
 pub fn ping() -> Result<(), String> {
     let resp = roundtrip(r#"{"op":"ping"}"#, false)?;
-    if resp.ok {
+    if resp.ok && resp.version == Some(HELPER_PROTOCOL_VERSION) {
         Ok(())
+    } else if resp.ok {
+        Err("helper 版本过旧,需要更新".into())
     } else {
         Err(resp.error.unwrap_or_else(|| "ping 失败".into()))
     }
 }
 
 /// 请求 helper 建 utun 并通过 SCM_RIGHTS 拿 fd 回来。
-/// `cfg` 目前未用(预留给 MTU / 接口名个性化),保持签名与未来一致。
+/// TUN 地址和路由参数从已应用的 mihomo 配置读取,保证 root helper 与内核一致。
 pub async fn ensure_tun_fd(_cfg: &AppConfig) -> Result<i32, String> {
     if !is_installable() {
         return Err(
@@ -78,10 +85,11 @@ pub async fn ensure_tun_fd(_cfg: &AppConfig) -> Result<i32, String> {
     if !is_installed() {
         install()?;
     }
+    let tun_setup = crate::mihomo::kernel().get_tun_setup().await?;
     // helper 可能刚 bootstrap 完还没 ready,给一次短重试
     let mut last_err = String::new();
     for _ in 0..5 {
-        match request_tun_on() {
+        match request_tun_on(&tun_setup) {
             Ok(fd) => return Ok(fd),
             Err(e) => {
                 last_err = e;
@@ -119,22 +127,29 @@ fn roundtrip(req_json: &str, expect_fd: bool) -> Result<HelperResponse, String> 
         .and_then(|_| stream.write_all(b"\n"))
         .map_err(|e| format!("写请求失败:{e}"))?;
 
-    let mut buf = vec![0u8; 4096];
     let fd = if expect_fd {
-        Some(recv_fd(&stream, &mut buf)?)
+        Some(recv_fd(&stream)?)
     } else {
-        let n = read_line(&stream, &mut buf)?;
-        buf.truncate(n);
         None
     };
+    // fd 路径(SCM_RIGHTS)和 JSON 路径(普通字节流)同一条 socket,
+    // fd 先到;之后还要 read JSON 响应(helper 用 json.NewEncoder 写一行)
+    let mut buf = vec![0u8; 4096];
+    let n = read_line(&stream, &mut buf)?;
+    buf.truncate(n);
     parse_response(&buf, fd)
 }
 
-fn request_tun_on() -> Result<i32, String> {
+fn request_tun_on(tun_setup: &serde_json::Value) -> Result<i32, String> {
     // 固定 utun9:避免 sing-tun 在未指定名字时不暴露 fd 的问题。
     // utun0-8 常被系统/其它 VPN 占,9 起步撞车率低;helper 端 tun.New
     // 遇到 EBUSY 会失败,主 App 会在下一轮 install/retry 中换名字(目前未实现轮换)。
-    let resp = roundtrip(r#"{"op":"tun-on","name":"utun9","mtu":1500}"#, true)?;
+    let request = serde_json::json!({
+        "op": "tun-on",
+        "name": "utun9",
+        "tun": tun_setup,
+    });
+    let resp = roundtrip(&request.to_string(), true)?;
     match (resp.ok, resp.fd) {
         (true, Some(fd)) => Ok(fd),
         (true, None) => Err("helper 未回传 fd".into()),
@@ -150,6 +165,8 @@ struct HelperResponse {
     #[serde(default)]
     #[allow(dead_code)]
     name: Option<String>,
+    #[serde(default)]
+    version: Option<u32>,
     #[serde(skip)]
     fd: Option<i32>,
 }
@@ -175,12 +192,14 @@ fn read_line(stream: &UnixStream, buf: &mut [u8]) -> Result<usize, String> {
 
 /// 通过 SCM_RIGHTS 从 unix socket 收一个 fd;同时把数据字节读进 `buf`
 /// (helper 端 sendmsg 的 payload 是 1 字节占位,JSON 响应随后用普通 read 到)。
-fn recv_fd(stream: &UnixStream, buf: &mut [u8]) -> Result<i32, String> {
+fn recv_fd(stream: &UnixStream) -> Result<i32, String> {
     use nix::sys::socket::{recvmsg, ControlMessageOwned, MsgFlags};
     use std::io::IoSliceMut;
 
     let raw: RawFd = stream.as_raw_fd();
-    let mut iov = [IoSliceMut::new(buf)];
+    // SCM_RIGHTS 的 payload 是 1 字节占位;给点小 buffer 就行
+    let mut scratch = [0u8; 1];
+    let mut iov = [IoSliceMut::new(&mut scratch)];
     // cmsg buffer 至少能容一个 cmsghdr + 一个 fd
     let mut cmsg = [0u8; 64];
 
@@ -235,12 +254,12 @@ pub fn install() -> Result<(), String> {
     let script = format!(
         concat!(
             "do shell script \"",
+            "launchctl bootout system '{plist_dst}' 2>/dev/null || true; ",
             "mkdir -p '{bin_dir}' '{plist_dir}' && ",
             "cp '{tmp_bin}' '{bin_dst}' && ",
             "chown root:wheel '{bin_dst}' && chmod 755 '{bin_dst}' && ",
             "cp '{tmp_plist}' '{plist_dst}' && ",
             "chown root:wheel '{plist_dst}' && chmod 644 '{plist_dst}' && ",
-            "launchctl bootout system '{plist_dst}' 2>/dev/null; ",
             "launchctl bootstrap system '{plist_dst}'",
             "\" with administrator privileges"
         ),
@@ -312,6 +331,8 @@ fn launchd_plist() -> String {
         <string>{bin}</string>
         <string>-socket</string>
         <string>{sock}</string>
+        <string>-client-uid</string>
+        <string>{uid}</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
@@ -327,5 +348,7 @@ fn launchd_plist() -> String {
         label = HELPER_LABEL,
         bin = install_bin_path().display(),
         sock = SOCKET_PATH,
+        // helper 在 root LaunchDaemon 中运行,只接受安装它的当前登录用户。
+        uid = unsafe { getuid() },
     )
 }

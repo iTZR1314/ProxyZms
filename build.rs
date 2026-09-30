@@ -86,6 +86,9 @@ fn build_go_core() {
     let mut cmd = Command::new(&go);
     cmd.current_dir(&core_dir)
         .args(["build", "-buildmode=c-archive"])
+        // with_gvisor:mihomo 的 TUN 栈 gvisor 需要这个 build tag,
+        // 否则tun.New 时报 "gVisor is not included in this build"
+        .args(["-tags", "with_gvisor"])
         // -s -w 去符号/调试信息瘦身;-buildid= 避免 hash 随 Go 版本抖动弄垮 cargo 增量构建
         .args(["-ldflags", "-s -w -buildid="])
         .arg("-o")

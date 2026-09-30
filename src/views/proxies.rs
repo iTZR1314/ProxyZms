@@ -13,6 +13,8 @@ pub fn Nodes() -> Element {
     let mut config = use_context::<Signal<AppConfig>>();
     let tele = use_context::<Telemetry>();
     let mut testing = use_signal(HashSet::<String>::new);
+    let selection_error = use_signal(|| None::<String>);
+    let test_status = use_signal(|| None::<String>);
     // 当前激活的策略组名;为 None 或不再存在时回退到首个组
     let mut active = use_signal(|| None::<String>);
 
@@ -85,6 +87,10 @@ pub fn Nodes() -> Element {
                 }
             }
 
+            if let Some(err) = selection_error() {
+                div { class: "mt-3 text-xs text-red-700", "节点切换失败：{err}" }
+            }
+
             // ── 空状态 ──
             if groups.is_empty() {
                 div { class: "flex-1 flex items-center justify-center",
@@ -151,11 +157,37 @@ pub fn Nodes() -> Element {
                                         let g = gname_test.clone();
                                         // 单节点逐一测速,完成后统一刷新(取代旧 /group/:name/delay REST)
                                         let members: Vec<String> = group.all.clone();
+                                        let total = members.len();
+                                        let mut test_status = test_status;
                                         testing.write().insert(g.clone());
+                                        test_status.set(Some(format!("准备测速 {total} 个节点…")));
                                         spawn(async move {
-                                            for member in members.iter() {
-                                                let _ = kernel().test_delay(member, "", 3000).await;
+                                            let mut succeeded = 0usize;
+                                            let mut failures = Vec::new();
+                                            for (index, member) in members.iter().enumerate() {
+                                                test_status.set(Some(format!(
+                                                    "测速中 {}/{}：{}",
+                                                    index + 1,
+                                                    total,
+                                                    member
+                                                )));
+                                                match kernel().test_delay(member, "", 3000).await {
+                                                    Ok(result) if result.delay > 0 => succeeded += 1,
+                                                    Ok(result) => failures.push(format!(
+                                                        "{}：{}",
+                                                        member,
+                                                        result.error.unwrap_or_else(|| "无有效延迟".to_string())
+                                                    )),
+                                                    Err(e) => failures.push(format!("{}：{}", member, e)),
+                                                }
                                             }
+                                            let failed = total.saturating_sub(succeeded);
+                                            let detail = failures.first().cloned().unwrap_or_default();
+                                            test_status.set(Some(if failed == 0 || detail.is_empty() {
+                                                format!("测速完成：{succeeded}/{total} 个节点成功")
+                                            } else {
+                                                format!("测速完成：{succeeded}/{total} 成功；首个失败：{detail}")
+                                            }));
                                             let mut poke = tele.poke;
                                             poke.set(poke() + 1);
                                             testing.write().remove(&g);
@@ -167,6 +199,9 @@ pub fn Nodes() -> Element {
                                         "测速"
                                     }
                                 }
+                            }
+                            if let Some(status) = test_status() {
+                                div { class: "px-4 py-2 text-xs text-neutral-500 border-b border-neutral-200", "{status}" }
                             }
                             // 节点列表:flex-1 + min-h-0 + 内部静默滚动(.no-scrollbar)
                             // 一行一个节点,左侧红点标记当前选中,右侧延迟右对齐(tabular-nums 对齐数位)
@@ -197,6 +232,7 @@ pub fn Nodes() -> Element {
                                             };
                                             let g = gname.clone();
                                             let m = member.clone();
+                                            let mut selection_error = selection_error;
                                             rsx! {
                                                 button {
                                                     key: "{member}",
@@ -209,12 +245,19 @@ pub fn Nodes() -> Element {
                                                     onclick: move |_| {
                                                         let g = g.clone();
                                                         let m = m.clone();
+                                                        selection_error.set(None);
                                                         spawn(async move {
-                                                            if kernel().select_proxy(&g, &m).await.is_ok() {
-                                                                config.write().selected_map.insert(g.clone(), m.clone());
-                                                                let _ = config.read().save();
-                                                                let mut poke = tele.poke;
-                                                                poke.set(poke() + 1);
+                                                            match kernel().select_proxy(&g, &m).await {
+                                                                Ok(()) => {
+                                                                    config.write().selected_map.insert(g.clone(), m.clone());
+                                                                    let _ = config.read().save();
+                                                                    let mut poke = tele.poke;
+                                                                    poke.set(poke() + 1);
+                                                                }
+                                                                Err(e) => {
+                                                                    eprintln!("[zms] select_proxy failed group={g} name={m}: {e}");
+                                                                    selection_error.set(Some(e));
+                                                                }
                                                             }
                                                         });
                                                     },
@@ -277,6 +320,8 @@ pub fn TunControls() -> Element {
     // 共享 TUN 状态(与托盘同一信号)
     let mut tun_state = use_context::<crate::TunState>().0;
     let mut tun_busy = use_signal(|| false);
+    // Lifecycle 必须在 render 时取出;onclick 闭包里再 use_context 会 panic
+    let lifecycle = use_context::<crate::Lifecycle>();
 
     let tun_on = tun_state();
     let busy = tun_busy();
@@ -295,23 +340,33 @@ pub fn TunControls() -> Element {
                 },
                 disabled: busy,
                 onclick: move |_| {
+                    eprintln!("[zms] [BTN] TUN button clicked, busy={}", tun_busy());
                     if tun_busy() {
+                        eprintln!("[zms] [BTN] already busy, ignoring");
                         return;
                     }
                     let target = !tun_state();
+                    eprintln!("[zms] [BTN] target={}", target);
                     tun_busy.set(true);
-                    let lc = use_context::<crate::Lifecycle>();
+                    let lc = lifecycle.clone();
                     spawn(async move {
+                        eprintln!("[zms] [TASK] spawn started");
                         let cfg_snapshot = config.read().clone();
-                        // 成功才落定状态(失败保持原状),全程不乐观更新。
-                        // macOS:helper 未安装或 fd 注入失败 → Err 弹出(保持 OFF)
-                        if lc.0.set_tun(target, &cfg_snapshot).await.is_ok() {
-                            tun_state.set(target);
-                            let mut cfg = config.write();
-                            cfg.tun_enable = target;
-                            let _ = cfg.save();
+                        eprintln!("[zms] [TASK] cfg work_dir={}", cfg_snapshot.work_dir);
+                        match lc.0.set_tun(target, &cfg_snapshot).await {
+                            Ok(()) => {
+                                eprintln!("[zms] [TASK] set_tun OK, setting tun_state={}", target);
+                                tun_state.set(target);
+                                let mut cfg = config.write();
+                                cfg.tun_enable = target;
+                                let _ = cfg.save();
+                            }
+                            Err(e) => {
+                                eprintln!("[zms] [TASK] set_tun failed: {e}");
+                            }
                         }
                         tun_busy.set(false);
+                        eprintln!("[zms] [TASK] spawn finished");
                     });
                 },
                 if busy {

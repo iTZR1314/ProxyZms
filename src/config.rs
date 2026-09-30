@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AppConfig {
     /// mihomo 工作目录(-d);留空 = 用 [`crate::bootstrap::data_dir`] 的托管路径
     #[serde(default)]
@@ -26,9 +26,35 @@ pub struct AppConfig {
     /// 日志级别(debug/info/warning/error/silent)
     #[serde(default)]
     pub log_level: String,
+    /// 是否把 Mihomo 混合代理端口开放给局域网设备。
+    #[serde(default)]
+    pub share_lan: bool,
+    /// Mihomo mixed-port；旧配置缺省时沿用内置端口 7890。
+    #[serde(default = "default_share_port")]
+    pub share_port: u16,
     /// 策略组 → 用户手选节点;apply_config 时回写 selector
     #[serde(default)]
     pub selected_map: HashMap<String, String>,
+}
+
+const fn default_share_port() -> u16 {
+    7890
+}
+
+impl Default for AppConfig {
+    fn default() -> Self {
+        Self {
+            work_dir: String::new(),
+            subscription_url: String::new(),
+            mode: String::new(),
+            tun_enable: false,
+            tun_stack: String::new(),
+            log_level: String::new(),
+            share_lan: false,
+            share_port: default_share_port(),
+            selected_map: HashMap::new(),
+        }
+    }
 }
 
 /// 配置文件路径:`<config_dir>/proxy-zms/config.json`

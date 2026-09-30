@@ -125,12 +125,29 @@ func proxyzms_set_tun(enable C.int) *C.char {
 	return okBool(true)
 }
 
+//export proxyzms_set_lan_share
+func proxyzms_set_lan_share(enable C.int, port C.int) *C.char {
+	if err := setLanShare(enable != 0, int(port)); err != nil {
+		return errPayload(err)
+	}
+	return okBool(true)
+}
+
 //export proxyzms_adopt_tun
 func proxyzms_adopt_tun(fd C.int) *C.char {
 	if err := adoptTunFD(int(fd)); err != nil {
 		return errPayload(err)
 	}
 	return okBool(true)
+}
+
+//export proxyzms_get_tun_setup
+func proxyzms_get_tun_setup() *C.char {
+	data, err := getTunSetupJSON()
+	if err != nil {
+		return errPayload(err)
+	}
+	return rawJsonString(data)
 }
 
 //export proxyzms_set_log_level

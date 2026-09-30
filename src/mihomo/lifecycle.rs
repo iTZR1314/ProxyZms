@@ -68,6 +68,9 @@ impl KernelLifecycle {
                 return Err(e);
             }
         }
+        kernel()
+            .set_lan_share(cfg.share_lan, cfg.share_port)
+            .await?;
 
         {
             let mut inner = self.inner.lock().map_err(|_| "lifecycle lock poisoned")?;
@@ -94,28 +97,37 @@ impl KernelLifecycle {
     /// 设置 TUN 开关。**macOS 需要 helper fd;Windows 直接内核**。
     /// 开启失败会把错误往外抛(不静默),UI 应保持 OFF。
     pub async fn set_tun(&self, enable: bool, cfg: &AppConfig) -> Result<(), String> {
+        eprintln!("[zms] [LC] set_tun({})", if enable { "ON" } else { "OFF" });
         if !enable {
             let res = kernel().set_tun(false).await;
             #[cfg(target_os = "macos")]
             {
-                // helper 那边也要回收(utun 接口 + 路由);失败不阻塞,
-                // launchd KeepAlive 下次开 TUN 时会幂等重建
-                if let Err(e) =
-                    tokio::task::spawn_blocking(helper::release_tun).await
-                {
-                    eprintln!("[zms] helper release_tun 任务异常:{e}");
-                } else {
-                    // Result 包 Result:helper 内部错误只打日志
-                }
+                // helper 持有另一份 fd;必须成功释放,否则旧系统路由会继续指向 utun。
+                let helper_res = tokio::task::spawn_blocking(helper::release_tun)
+                    .await
+                    .map_err(|e| format!("helper release_tun 任务异常:{e}"))
+                    .and_then(|result| result);
+                return match (res, helper_res) {
+                    (Ok(()), Ok(())) => Ok(()),
+                    (Err(kernel), Ok(())) => Err(kernel),
+                    (Ok(()), Err(helper)) => Err(format!("TUN helper 清理失败:{helper}")),
+                    (Err(kernel), Err(helper)) => {
+                        Err(format!("{kernel}; TUN helper 清理失败:{helper}"))
+                    }
+                };
             }
+            #[cfg(not(target_os = "macos"))]
             return res;
         }
 
         #[cfg(target_os = "macos")]
         {
             // fd 走 helper → 内核注入。失败返回 Err,UI 保持 OFF,不误判成功。
+            eprintln!("[zms] [LC] ensure_tun_fd...");
             let fd = helper::ensure_tun_fd(cfg).await?;
+            eprintln!("[zms] [LC] got fd={}, calling adopt_tun_fd", fd);
             kernel().adopt_tun_fd(fd).await?;
+            eprintln!("[zms] [LC] adopt_tun_fd OK, calling set_tun(true)");
         }
 
         kernel().set_tun(true).await

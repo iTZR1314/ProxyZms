@@ -81,6 +81,14 @@ pub fn Flow() -> Element {
             return;
         }
 
+        // Flow 是路由页,每次从其他页面切回都会重新挂载。
+        // 内核属于 App 进程级状态;已运行时不可再次 init/apply_config,
+        // 否则会重复重建 listener/provider,尤其可能意外关闭刚启用的 TUN。
+        if kernel().is_running().await.unwrap_or(false) {
+            setup.set(Setup::Ready);
+            return;
+        }
+
         // 1) 订阅 config.yaml 不存在 / 设置了订阅 URL,先下载
         let sub = config.read().subscription_url.clone();
         setup.set(Setup::Applying {
@@ -135,6 +143,12 @@ pub fn Flow() -> Element {
 
         // 4) 恢复用户持久化的 mode / log_level / catalog(仅当下发不 chang rust TUN)
         let persisted = config.read().clone();
+        if let Err(e) = kernel()
+            .set_lan_share(persisted.share_lan, persisted.share_port)
+            .await
+        {
+            error.set(Some(format!("应用局域网共享设置失败:{e}")));
+        }
         if !persisted.mode.trim().is_empty() && persisted.mode != "rule" {
             let _ = kernel().set_mode(&persisted.mode).await;
         }

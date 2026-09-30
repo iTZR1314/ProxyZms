@@ -26,13 +26,24 @@ if [ ! -f "$PLIST" ]; then
     exit 1
 fi
 
-# -replace 是 idempotent 的:键存在则覆盖,不存在则等价于 -insert。
-# Always 是 macOS 11+ 用的;Peripheral 是 10.15 及更旧版本用的 —— 双写兼容。
-plutil -replace NSBluetoothAlwaysUsageDescription \
-    -string "VPN JR 需要扫描附近的蓝牙设备,以便在你的手机离开本机时自动锁屏。" \
-    "$PLIST"
-plutil -replace NSBluetoothPeripheralUsageDescription \
-    -string "VPN JR 需要蓝牙访问以实现自动锁屏。" \
-    "$PLIST"
+set_plist_string() {
+    local key="$1"
+    local value="$2"
+    if /usr/libexec/PlistBuddy -c "Print :$key" "$PLIST" >/dev/null 2>&1; then
+        plutil -replace "$key" -string "$value" "$PLIST"
+    else
+        plutil -insert "$key" -string "$value" "$PLIST"
+    fi
+}
 
-echo "✓ Injected NSBluetooth*UsageDescription into $PLIST"
+# 把 Finder、Dock 和应用切换器显示名改成产品名;可执行文件/Bundle ID 仍保持稳定。
+set_plist_string CFBundleName "施展魔法"
+set_plist_string CFBundleDisplayName "施展魔法"
+
+# Always 是 macOS 11+ 用的;Peripheral 是 10.15 及更旧版本用的 —— 双写兼容。
+set_plist_string NSBluetoothAlwaysUsageDescription \
+    "施展魔法需要扫描附近的蓝牙设备,以便在你的手机离开本机时自动锁屏。"
+set_plist_string NSBluetoothPeripheralUsageDescription \
+    "施展魔法需要蓝牙访问以实现自动锁屏。"
+
+echo "✓ Set app display name and injected NSBluetooth*UsageDescription into $PLIST"

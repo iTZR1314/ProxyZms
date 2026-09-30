@@ -6,11 +6,26 @@ use crate::helper;
 use crate::mihomo::kernel;
 use dioxus::prelude::*;
 
+#[cfg(target_os = "macos")]
+fn helper_may_own_tun() -> bool {
+    helper::is_installed()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn helper_may_own_tun() -> bool {
+    false
+}
+
 /// 设置页。FFI 内核后大幅变轻 —— mihomo 二进制 / controller secret / 重下载
 /// 这些概念都不复存在,留下的只是订阅源 + 应用行为偏好 + 数据目录覆盖。
 #[component]
 pub fn Settings() -> Element {
     let mut config = use_context::<Signal<AppConfig>>();
+    let mut share_port_input = use_signal(|| config.read().share_port.to_string());
+    let lifecycle = use_context::<crate::Lifecycle>();
+    let lifecycle_for_update = lifecycle.clone();
+    let lifecycle_for_restart = lifecycle.clone();
+    let mut tun_state = use_context::<crate::TunState>().0;
     let mut autostart_enabled = use_signal(autostart::is_enabled);
     let mut autostart_error = use_signal(|| None::<String>);
     let autostart_supported = autostart::is_supported();
@@ -19,6 +34,8 @@ pub fn Settings() -> Element {
     let mut updating = use_signal(|| false);
     let mut restart_status = use_signal(|| None::<String>);
     let mut restarting = use_signal(|| false);
+    let mut applying_share = use_signal(|| false);
+    let mut share_status = use_signal(|| None::<String>);
     #[cfg(target_os = "macos")]
     let mut helper_status = use_signal(|| None::<String>);
     #[cfg(target_os = "macos")]
@@ -33,6 +50,7 @@ pub fn Settings() -> Element {
         }
         updating.set(true);
         sub_status.set(None);
+        let lifecycle = lifecycle_for_update.clone();
         spawn(async move {
             let (url, work_dir) = {
                 let c = config.read();
@@ -48,12 +66,59 @@ pub fn Settings() -> Element {
                             return;
                         }
                     };
+                    // apply_config 会重建 listener。macOS helper 持有独立 utun fd,
+                    // 必须先关 TUN 释放系统路由,否则旧路由会指向已关闭的 Go listener。
+                    let cfg_snapshot = config.read().clone();
+                    let cleanup_tun = tun_state() || helper_may_own_tun();
+                    if cleanup_tun {
+                        sub_status.set(Some("正在关闭 TUN 并应用订阅…".to_string()));
+                        let disable_result = lifecycle.0.set_tun(false, &cfg_snapshot).await;
+                        let core_running = kernel().is_running().await.unwrap_or(false);
+                        if let Err(e) = disable_result {
+                            // 内核已停止时允许后面重新 init;helper 清理失败或活内核拒绝关闭则中止。
+                            if e.contains("TUN helper 清理失败") || core_running {
+                                sub_status.set(Some(format!("关闭 TUN 失败，订阅未应用:{e}")));
+                                updating.set(false);
+                                return;
+                            }
+                            eprintln!("[zms] core already stopped before subscription apply: {e}");
+                        }
+                    }
+                    tun_state.set(false);
+                    {
+                        let mut cfg = config.write();
+                        cfg.tun_enable = false;
+                        let _ = cfg.save();
+                    }
+                    let home = bootstrap::effective_data_dir(&work_dir);
+                    if !kernel().is_running().await.unwrap_or(false) {
+                        if let Err(e) = kernel().init(&home).await {
+                            sub_status.set(Some(format!("内核初始化失败:{e}")));
+                            updating.set(false);
+                            return;
+                        }
+                    }
                     let selected = config.read().selected_map.clone();
                     match kernel().apply_config(&yaml, &selected).await {
-                        Ok(Some(w)) if !w.is_empty() => sub_status.set(Some(format!(
-                            "已更新订阅(应用走默认兜底:{w})"
-                        ))),
-                        Ok(_) => sub_status.set(Some("已更新订阅并应用".to_string())),
+                        Ok(warning) => {
+                            let preferences = config.read().clone();
+                            match kernel()
+                                .set_lan_share(preferences.share_lan, preferences.share_port)
+                                .await
+                            {
+                                Ok(()) => {
+                                    let suffix = warning
+                                        .filter(|w| !w.is_empty())
+                                        .map(|w| format!("(应用走默认兜底:{w})"))
+                                        .unwrap_or_default();
+                                    sub_status.set(Some(format!(
+                                        "已更新订阅并应用{suffix};TUN 已关闭,可重新开启"
+                                    )));
+                                }
+                                Err(e) => sub_status
+                                    .set(Some(format!("订阅已应用,但恢复局域网共享设置失败:{e}"))),
+                            }
+                        }
                         Err(e) => sub_status.set(Some(format!("应用配置失败:{e}"))),
                     }
                 }
@@ -70,8 +135,28 @@ pub fn Settings() -> Element {
         }
         restarting.set(true);
         restart_status.set(Some("停止内核…".to_string()));
+        let lifecycle = lifecycle_for_restart.clone();
         spawn(async move {
             let work_dir = config.read().work_dir.clone();
+            let cfg_snapshot = config.read().clone();
+            let cleanup_tun = tun_state() || helper_may_own_tun();
+            if cleanup_tun {
+                if let Err(e) = lifecycle.0.set_tun(false, &cfg_snapshot).await {
+                    let core_running = kernel().is_running().await.unwrap_or(false);
+                    if e.contains("TUN helper 清理失败") || core_running {
+                        restart_status.set(Some(format!("关闭 TUN 失败，未重启内核:{e}")));
+                        restarting.set(false);
+                        return;
+                    }
+                    eprintln!("[zms] core already stopped before kernel restart: {e}");
+                }
+            }
+            tun_state.set(false);
+            {
+                let mut cfg = config.write();
+                cfg.tun_enable = false;
+                let _ = cfg.save();
+            }
             let _ = kernel().shutdown().await;
             restart_status.set(Some("重新初始化…".to_string()));
             let home = bootstrap::effective_data_dir(&work_dir);
@@ -90,7 +175,17 @@ pub fn Settings() -> Element {
             };
             let selected = config.read().selected_map.clone();
             match kernel().apply_config(&yaml, &selected).await {
-                Ok(_) => restart_status.set(Some("已重启内核".to_string())),
+                Ok(_) => {
+                    let preferences = config.read().clone();
+                    match kernel()
+                        .set_lan_share(preferences.share_lan, preferences.share_port)
+                        .await
+                    {
+                        Ok(()) => restart_status.set(Some("已重启内核".to_string())),
+                        Err(e) => restart_status
+                            .set(Some(format!("内核已启动,但恢复局域网共享设置失败:{e}"))),
+                    }
+                }
                 Err(e) => restart_status.set(Some(format!("应用配置失败:{e}"))),
             }
             restarting.set(false);
@@ -100,6 +195,45 @@ pub fn Settings() -> Element {
     let save = move |_| {
         let _ = config.read().save();
         saved.set(true);
+    };
+
+    let apply_share = move |_| {
+        if applying_share() {
+            return;
+        }
+        let Some(port) = share_port_input()
+            .parse::<u16>()
+            .ok()
+            .filter(|port| *port > 0)
+        else {
+            share_status.set(Some("端口必须是 1 到 65535 之间的整数".to_string()));
+            return;
+        };
+        let mut snapshot = config.read().clone();
+        snapshot.share_port = port;
+        applying_share.set(true);
+        share_status.set(Some("正在应用 Mihomo 共享设置…".to_string()));
+        spawn(async move {
+            match kernel()
+                .set_lan_share(snapshot.share_lan, snapshot.share_port)
+                .await
+            {
+                Ok(()) => {
+                    let _ = config.read().save();
+                    saved.set(true);
+                    share_status.set(Some(if snapshot.share_lan {
+                        format!("已开放 mixed-port {}", snapshot.share_port)
+                    } else {
+                        format!(
+                            "局域网访问已关闭，本机 mixed-port 为 {}",
+                            snapshot.share_port
+                        )
+                    }));
+                }
+                Err(e) => share_status.set(Some(format!("应用共享设置失败:{e}"))),
+            }
+            applying_share.set(false);
+        });
     };
 
     // macOS:安装 root helper(AppleScript 弹密码,launchd 常驻)
@@ -215,10 +349,69 @@ pub fn Settings() -> Element {
                 }
             }
 
+            // Mihomo 原生 LAN 共享:allow-lan + mixed-port,不额外创建代理服务。
+            section {
+                div { class: "text-[11px] uppercase tracking-[0.2em] text-[var(--accent)] border-b border-black pb-2 mb-4", "03 / 局域网共享" }
+                div { class: "space-y-4",
+                    label { class: "flex items-start gap-3 cursor-pointer",
+                        input {
+                            r#type: "checkbox",
+                            class: "mt-1 w-4 h-4 accent-[var(--accent)] cursor-pointer",
+                            checked: config().share_lan,
+                            onchange: move |evt| {
+                                config.write().share_lan = evt.value().parse::<bool>().unwrap_or(false);
+                                saved.set(false);
+                            },
+                        }
+                        div { class: "flex-1",
+                            div { class: "text-sm font-medium", "允许局域网设备使用代理" }
+                            div { class: "mt-1 text-xs text-neutral-500 leading-relaxed",
+                                "使用 Mihomo 原生 allow-lan。开启后，同一局域网内的设备可连接本机 LAN IP 与下方端口。"
+                            }
+                        }
+                    }
+                    label { class: "block max-w-xs",
+                        span { class: "block text-[11px] uppercase tracking-[0.15em] text-neutral-500 mb-2", "Mihomo mixed-port" }
+                        input {
+                            r#type: "number",
+                            min: "1",
+                            max: "65535",
+                            step: "1",
+                            class: "w-full px-0 py-2 bg-transparent border-0 border-b border-black rounded-none outline-none text-base focus:border-[var(--accent)] transition-colors",
+                            value: share_port_input(),
+                            oninput: move |evt| {
+                                let value = evt.value();
+                                share_port_input.set(value.clone());
+                                if let Ok(port) = value.parse::<u16>() {
+                                    if port > 0 {
+                                        config.write().share_port = port;
+                                        saved.set(false);
+                                    }
+                                }
+                            },
+                        }
+                    }
+                    div { class: "text-xs text-neutral-500 leading-relaxed",
+                        "局域网客户端填写“本机 LAN IP:端口”。开启 Mihomo 原生 allow-lan 后，订阅 YAML 中配置的其他入站端口也可能对局域网开放；如需保护，请在 Mihomo 配置中设置 authentication，并只在可信网络使用。"
+                    }
+                    div { class: "flex items-center gap-4 pt-1",
+                        button {
+                            class: "px-6 py-2 border border-[var(--accent)] text-[var(--accent)] text-sm uppercase tracking-[0.15em] hover:bg-[var(--accent)] hover:text-white disabled:opacity-40 transition-colors",
+                            disabled: applying_share() || restarting() || updating(),
+                            onclick: apply_share,
+                            if applying_share() { "应用中…" } else { "应用共享设置" }
+                        }
+                        if let Some(s) = share_status() {
+                            span { class: "text-xs text-neutral-600", "{s}" }
+                        }
+                    }
+                }
+            }
+
             // macOS root helper 区块(TUN 依赖;launchd 常驻)
             if cfg!(target_os = "macos") {
                 section {
-                div { class: "text-[11px] uppercase tracking-[0.2em] text-[var(--accent)] border-b border-black pb-2 mb-4", "03 / macOS Helper" }
+                div { class: "text-[11px] uppercase tracking-[0.2em] text-[var(--accent)] border-b border-black pb-2 mb-4", "04 / macOS Helper" }
                 div { class: "space-y-4",
                     div { class: "text-xs text-neutral-600 leading-relaxed",
                         "TUN 模式在 macOS 上需要 root 权限建立 utun 虚拟网卡。本程序通过独立的 \
@@ -253,7 +446,7 @@ pub fn Settings() -> Element {
 
             // 系统区块:开机启动
             section {
-                div { class: "text-[11px] uppercase tracking-[0.2em] text-[var(--accent)] border-b border-black pb-2 mb-4", "03 / 系统" }
+                div { class: "text-[11px] uppercase tracking-[0.2em] text-[var(--accent)] border-b border-black pb-2 mb-4", "05 / 系统" }
                 div { class: "space-y-4",
                     // 开机启动
                     label { class: "flex items-start gap-3 cursor-pointer",
@@ -274,7 +467,7 @@ pub fn Settings() -> Element {
                             },
                         }
                         div { class: "flex-1",
-                            div { class: "text-sm font-medium", "开机启动 ProxyZms" }
+                            div { class: "text-sm font-medium", "开机启动施展魔法" }
                             div { class: "mt-1 text-xs text-neutral-500 leading-relaxed",
                                 if autostart_supported {
                                     "登录系统后自动拉起。macOS 写入 LaunchAgent;Windows 写入注册表 Run 项。"

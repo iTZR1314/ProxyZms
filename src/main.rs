@@ -226,7 +226,7 @@ fn main() {
         };
 
         let window = WindowBuilder::new()
-            .with_title("VPN JR")
+            .with_title("施展魔法")
             .with_window_icon(icon)
             // 默认窗口宽高(逻辑像素),并设置最小尺寸
             .with_inner_size(LogicalSize::new(900.0, 825.0))
@@ -273,54 +273,14 @@ fn main() {
     dioxus::launch(App);
 }
 
-/// 把 fmr.png 加工成 macOS 风格图标(圆角 squircle + 四周留白),返回 PNG 字节。
-#[cfg(target_os = "macos")]
-fn rounded_icon_png() -> Option<Vec<u8>> {
-    use image::{imageops::FilterType, ExtendedColorType, ImageBuffer, ImageEncoder, Rgba, RgbaImage};
-    let src = image::load_from_memory(include_bytes!("../assets/fmr.png"))
-        .ok()?
-        .to_rgba8();
-    let canvas = 1024u32;
-    let margin = 100u32; // macOS 图标网格的留白
-    let content = canvas - margin * 2; // 824
-    let radius = content as f32 * 0.2237; // 近似 Apple squircle 圆角半径
-    let resized = image::imageops::resize(&src, content, content, FilterType::Lanczos3);
-    let mut out: RgbaImage = ImageBuffer::from_pixel(canvas, canvas, Rgba([0, 0, 0, 0]));
-    let half = content as f32 / 2.0;
-    for y in 0..content {
-        for x in 0..content {
-            // 圆角矩形有符号距离场 → 边缘抗锯齿覆盖率
-            let px = (x as f32 + 0.5) - half;
-            let py = (y as f32 + 0.5) - half;
-            let qx = px.abs() - half + radius;
-            let qy = py.abs() - half + radius;
-            let d = qx.max(qy).min(0.0)
-                + (qx.max(0.0).powi(2) + qy.max(0.0).powi(2)).sqrt()
-                - radius;
-            let cov = (0.5 - d).clamp(0.0, 1.0);
-            if cov > 0.0 {
-                let mut p = *resized.get_pixel(x, y);
-                p[3] = (p[3] as f32 * cov) as u8;
-                out.put_pixel(x + margin, y + margin, p);
-            }
-        }
-    }
-    let mut buf = Vec::new();
-    image::codecs::png::PngEncoder::new(&mut buf)
-        .write_image(&out, canvas, canvas, ExtendedColorType::Rgba8)
-        .ok()?;
-    Some(buf)
-}
-
 /// macOS:运行时把(加了圆角的)图标设为 Dock 图标(dev 模式也生效,不依赖打包)。
 #[cfg(target_os = "macos")]
 fn set_dock_icon() {
     use objc::runtime::Object;
     use objc::{class, msg_send, sel, sel_impl};
     type Id = *mut Object;
-    let Some(png) = rounded_icon_png() else {
-        return;
-    };
+    // 与 Dioxus.toml 打包进 .app 的 bundle icon 共用同一份圆角资源。
+    let png = include_bytes!("../assets/fmr-macos.png");
     unsafe {
         let data: Id = msg_send![class!(NSData),
             dataWithBytes: png.as_ptr() as *const std::os::raw::c_void

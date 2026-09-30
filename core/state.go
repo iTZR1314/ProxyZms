@@ -3,6 +3,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -105,6 +106,54 @@ func setTun(enable bool) error {
 	return nil
 }
 
+// setLanShare 调整 Mihomo 原生 allow-lan / bind-address / mixed-port。
+// 只重建普通代理入站，不触碰 TUN listener，避免共享端口开关打断 utun。
+func setLanShare(enable bool, port int) error {
+	if err := ensureInit(); err != nil {
+		return err
+	}
+	if port < 1 || port > 65535 {
+		return fmt.Errorf("invalid mixed-port: %d", port)
+	}
+	configMu.Lock()
+	defer configMu.Unlock()
+	if currentConfig == nil || currentConfig.General == nil {
+		return errors.New("config not applied")
+	}
+
+	g := currentConfig.General
+	oldAllowLan, oldBindAddress, oldMixedPort := g.AllowLan, g.BindAddress, g.MixedPort
+	g.AllowLan = enable
+	g.BindAddress = "*"
+	g.MixedPort = port
+	updateProxyListenersLocked(currentConfig)
+	if actual := listener.GetPorts().MixedPort; actual != port {
+		// 绑定失败时恢复旧监听配置，避免共享端口切换造成现有本地代理也消失。
+		g.AllowLan, g.BindAddress, g.MixedPort = oldAllowLan, oldBindAddress, oldMixedPort
+		updateProxyListenersLocked(currentConfig)
+		return fmt.Errorf("cannot bind mixed-port %d", port)
+	}
+	return nil
+}
+
+// getTunSetupJSON 返回 mihomo 解析后的有效 TUN 配置,供 macOS root helper
+// 在接管 fd 之前设置 utun 地址和系统路由。FileDescriptor/Enable 由调用流程控制。
+func getTunSetupJSON() (string, error) {
+	if err := ensureInit(); err != nil {
+		return "", err
+	}
+	configMu.Lock()
+	defer configMu.Unlock()
+	if currentConfig == nil || currentConfig.General == nil {
+		return "", errors.New("config not applied")
+	}
+	raw, err := json.Marshal(currentConfig.General.Tun)
+	if err != nil {
+		return "", fmt.Errorf("marshal tun config: %w", err)
+	}
+	return string(raw), nil
+}
+
 // adoptTunFD:macOS helper 注入的外部 utun fd。写入 currentConfig.General.Tun.FileDescriptor,
 // 使得下一次 setTun(true) 走"接管既有 fd"路径而不是自己 connect(utun_control).
 // fd <0 表示清除(回到自创建路径——需要 root)。idempotent。
@@ -126,6 +175,16 @@ func updateListenersLocked(cfg *config.Config) {
 	if cfg == nil {
 		return
 	}
+	updateProxyListenersLocked(cfg)
+	listener.ReCreateTun(cfg.General.Tun, tunnel.Tunnel)
+}
+
+// updateProxyListenersLocked 按 Mihomo allow-lan/bind-address 重建代理入站,
+// 排除 TUN(由 macOS helper + SCM_RIGHTS 单独管理)。
+func updateProxyListenersLocked(cfg *config.Config) {
+	if cfg == nil || cfg.General == nil {
+		return
+	}
 	g := cfg.General
 	listener.SetAllowLan(g.AllowLan)
 	listener.SetBindAddress(g.BindAddress)
@@ -134,7 +193,6 @@ func updateListenersLocked(cfg *config.Config) {
 	listener.ReCreateMixed(g.MixedPort, tunnel.Tunnel)
 	listener.ReCreateRedir(g.RedirPort, tunnel.Tunnel)
 	listener.ReCreateTProxy(g.TProxyPort, tunnel.Tunnel)
-	listener.ReCreateTun(g.Tun, tunnel.Tunnel)
 	listener.ReCreateTuic(g.TuicServer, tunnel.Tunnel)
 	listener.PatchInboundListeners(cfg.Listeners, tunnel.Tunnel, true)
 }

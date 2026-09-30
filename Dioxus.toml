@@ -1,17 +1,17 @@
 [application]
 # dx 0.7 要求 [application] 表必须存在(即使为空),否则解析报 missing field `application`。
-# 注:macOS .app 名 / Windows NSIS 显示名 全部从 Cargo.toml 的 [package].name 派生,
-# 这里不需要 [application].name(实测 dx 0.7 的 bundler 不读)。
+# 注:Cargo 包名保留作 Rust crate / executable 标识。macOS 用户可见名称由
+# scripts/inject-macos-info-plist.sh 写入 CFBundleDisplayName。
 
 [bundle]
 identifier = "top.zhoumaosen"
 publisher = "ZHOUMAOSEN"
-icon = ["assets/fmr.ico", "assets/fmr.png"]
+icon = ["assets/fmr.ico", "assets/fmr-macos.png"]
 
 [web.app]
 
 # HTML title tag content
-title = "proxy-zms"
+title = "施展魔法"
 
 # include `assets` in web platform
 [web.resource]

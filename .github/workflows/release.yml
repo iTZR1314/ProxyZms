@@ -84,6 +84,17 @@ jobs:
         # 原生 runner 上 dx 默认按宿主架构构建,无需交叉编译。
         run: dx bundle --release --platform ${{ matrix.platform }} --package-types ${{ matrix.package-types }}
 
+      - name: Verify Windows bundle has no Wintun sidecar
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $dlls = Get-ChildItem -Path target -Recurse -File -Filter wintun.dll -ErrorAction SilentlyContinue
+          if ($dlls) {
+            $dlls | ForEach-Object { Write-Error "Unexpected external Wintun DLL in bundle: $($_.FullName)" }
+            exit 1
+          }
+          Write-Output "Wintun is embedded in the Mihomo c-archive; no sidecar DLL found."
+
       # ---- 收集产物 ----
       - name: Collect artifacts (macOS)
         if: runner.os == 'macOS'
@@ -92,8 +103,7 @@ jobs:
           set -euo pipefail
           mkdir -p artifacts
 
-          # dx bundle 直接产出以 Cargo [package].name 命名的 .app(已是「VPN-JR.app」),
-          # CFBundleName / CFBundleDisplayName / CFBundleExecutable 也一并对了 —— 无需后处理。
+          # dx bundle 先按 Cargo 包名生成 VpnJr.app;注入脚本把 Finder/Dock 显示名改成中文。
           app=$(find target -type d -name '*.app' -path '*bundle*' | head -n1)
           if [ -z "$app" ]; then echo "::error::未找到 .app 产物"; exit 1; fi
           echo "found app: $app"
@@ -109,11 +119,11 @@ jobs:
           codesign --verify --deep --strict --verbose=2 "$app"
 
           # 自己用 hdiutil 打 dmg,放一个 Applications 软链做「拖入安装」。
-          # -volname 用品牌名,挂载 dmg 时 Finder 侧栏显示「VPN JR」。
+          # -volname 使用应用显示名,挂载 dmg 时 Finder 侧栏显示「施展魔法」。
           staging=$(mktemp -d)
           cp -R "$app" "$staging/"
           ln -s /Applications "$staging/Applications"
-          hdiutil create -volname "VPN JR" -srcfolder "$staging" -ov -format UDZO \
+          hdiutil create -volname "施展魔法" -srcfolder "$staging" -ov -format UDZO \
             "$PWD/artifacts/ProxyZms-${{ matrix.name }}.dmg"
           rm -rf "$staging"
           ls -la artifacts

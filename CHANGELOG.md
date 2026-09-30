@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.3.0 — 2026-09-29
+## v0.3.0 — 2026-09-30
 
 **内核 FFI 化（mihomo 进进程）**：告别「独立子进程 + External Controller REST/WebSocket」，
 mihomo 以 Go c-archive 静态库形式链入 Rust 主程序，UI 与内核同进程。
@@ -11,6 +11,7 @@ mihomo 以 Go c-archive 静态库形式链入 Rust 主程序，UI 与内核同�
 - **不再有** external-controller 端口 / secret / WebSocket
 - **不再有** 进程树管理（pidfile / kill_tracked / cleanup_previous / Drop 杀子进程）
 - 所有控制面走 Go bridge → Rust FFI 函数调用，错误以统一 JSON 信封 `{"ok","data","error"}` 返回
+- 设置页新增 Mihomo 原生局域网共享：可配置 `allow-lan` / `mixed-port`，默认关闭
 
 ### macOS：TUN 真正可用（root helper + SCM_RIGHTS）
 
@@ -25,11 +26,12 @@ mihomo 以 Go c-archive 静态库形式链入 Rust 主程序，UI 与内核同�
 - 主 App 全程不提权，不需要 setuid
 - 设置页新增「macOS Helper」区块：安装/卸载按钮 + 说明
 
-### Windows：形态不变
+### Windows：单文件内核
 
 - exe 内嵌 `requireAdministrator` manifest，双击一次 UAC，整进程即管理员
-- Go 内核在进程内直接调 wintun（PR-4 再做 wintun.dll 编译期嵌入，
-  目前仍需 wintun.dll 与 exe 同目录或 PATH 可见）
+- Go 内核静态链入 exe；sing-tun v0.4.24 已按 amd64/arm64 用 `go:embed` 嵌入
+  对应的 Wintun DLL，并通过内存加载，不需要用户另行下载或摆放 `wintun.dll`
+- Windows TUN 不需要 macOS root helper / SCM_RIGHTS；仍需 UAC 管理员权限
 
 ### 开发者体验
 
@@ -51,7 +53,7 @@ mihomo 以 Go c-archive 静态库形式链入 Rust 主程序，UI 与内核同�
 
 - 老配置（v0.2.x 的 `mihomo_path` / `controller_url` / `secret` 字段）serde 自动忽略，
   不会报错；新字段带 `serde(default)` 平滑升级
-- 单文件产物：mac `.dmg` 111MB、Windows `.exe`（含 mihomo 内核 ≈ +3.6MB helper / +15MB 内核）
+- Windows 应用 exe 内含 Go c-archive / mihomo 与对应架构的 Wintun DLL；NSIS `.exe` 为安装包
 
 ## v0.2.14 — 之前的 release
 

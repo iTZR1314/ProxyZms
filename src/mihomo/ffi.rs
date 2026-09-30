@@ -29,7 +29,9 @@ extern "C" {
     fn proxyzms_set_mode(mode: *mut c_char) -> *mut c_char;
     fn proxyzms_get_mode() -> *mut c_char;
     fn proxyzms_set_tun(enable: c_int) -> *mut c_char;
+    fn proxyzms_set_lan_share(enable: c_int, port: c_int) -> *mut c_char;
     fn proxyzms_adopt_tun(fd: c_int) -> *mut c_char;
+    fn proxyzms_get_tun_setup() -> *mut c_char;
     fn proxyzms_set_log_level(level: *mut c_char) -> *mut c_char;
     fn proxyzms_validate_config(yaml: *mut c_char) -> *mut c_char;
     fn proxyzms_get_proxies() -> *mut c_char;
@@ -218,12 +220,31 @@ impl Kernel {
         .map(|_: bool| ())
     }
 
+    /// 使用 Mihomo 原生 allow-lan/bind-address/mixed-port 开关局域网共享。
+    pub async fn set_lan_share(&self, enable: bool, port: u16) -> Result<(), String> {
+        blocking(move || unsafe {
+            parse_envelope(&read_json(|| {
+                proxyzms_set_lan_share(if enable { 1 } else { 0 }, i32::from(port))
+            })?)
+        })
+        .await
+        .map(|_: bool| ())
+    }
+
     /// 注入 macOS helper 建的 utun fd。下一次 `set_tun(true)` 将接管它。
     /// fd <0 清除注入(回到自创建路径,需 root)。
     pub async fn adopt_tun_fd(&self, fd: i32) -> Result<(), String> {
         blocking(move || unsafe { parse_envelope(&read_json(|| proxyzms_adopt_tun(fd))?) })
             .await
             .map(|_: bool| ())
+    }
+
+    /// 返回 mihomo 解析后的有效 TUN 参数,供 macOS root helper 配置 utun 地址/路由。
+    pub async fn get_tun_setup(&self) -> Result<serde_json::Value, String> {
+        blocking(|| unsafe {
+            parse_envelope(&read_json(|| proxyzms_get_tun_setup())?)
+        })
+        .await
     }
 
     pub async fn set_log_level(&self, level: &str) -> Result<(), String> {

@@ -1,12 +1,13 @@
 # ProxyZms
 
-> 一个用 Rust 编写的桌面代理客户端 —— 下载、启动并接管 [mihomo](https://github.com/MetaCubeX/mihomo) 内核,提供中文图形界面。
+> 一个用 Rust + Go 构建的桌面代理客户端 —— 将 [mihomo](https://github.com/MetaCubeX/mihomo) 内核静态链入应用,提供中文图形界面。
 
-ProxyZms 把 mihomo 代理内核包装成一个开箱即用的桌面应用:它替你下载对应平台的内核二进制、拉取订阅、启动并通过 mihomo 的 External Controller REST API 实时控制代理。界面用 [Dioxus 0.7](https://dioxuslabs.com/)(Rust + RSX + Tailwind)构建,通过系统 WebView 渲染,最终打包成单文件可执行程序。
+ProxyZms 将 Mihomo 编译为 Go `c-archive` 并链接进 Rust 桌面程序。UI 通过 FFI 在进程内控制内核，不需要下载或启动独立 mihomo 二进制，也没有 External Controller 端口、secret 或 WebSocket。应用仍会按用户设置下载订阅 YAML。界面用 [Dioxus 0.7](https://dioxuslabs.com/)(Rust + RSX + Tailwind)构建,通过系统 WebView 渲染。
 
 ## ✨ 功能
 
-- **内核托管** —— 首次启动自动下载对应平台的 mihomo 二进制与默认配置,无需手动安装。
+- **内核集成** —— mihomo 与代理依赖编译进应用；首次启动只需准备默认配置或拉取订阅。
+- **局域网共享** —— 可在设置中启用 Mihomo 原生 `allow-lan` 并设置 `mixed-port`；默认关闭。
 - **订阅管理** —— 填入订阅链接即可拉取节点配置为 `config.yaml`;留空则使用内置最小默认配置。
 - **代理控制** —— 节点分组切换、延迟测速、规则/全局/直连模式切换。
 - **TUN 模式** —— 一键开关透明代理(需要管理员权限创建 TUN 设备)。
@@ -16,9 +17,9 @@ ProxyZms 把 mihomo 代理内核包装成一个开箱即用的桌面应用:它�
 
 ## 🔒 设计要点
 
-**进程归属不变量** —— *主程序不在运行,mihomo 内核就一定不在运行。* 应用在每一条退出路径上都保证清理子进程:正常关闭/panic 由 `Drop` 兜底,Ctrl-C/SIGTERM 由信号处理器清理,崩溃/SIGKILL 的残留则由下次启动时根据 `mihomo.pid` 回收。
+**同进程内核** —— UI 与 Mihomo 位于同一应用进程中，通过 Rust FFI 调用 Go bridge；退出应用即结束内核，不再管理独立 mihomo 子进程。
 
-**控制权接管** —— 应用把自己视为 mihomo External Controller 的唯一管理者。每次启动都会**剥除**订阅 YAML 里可能携带的 `external-controller` / `secret` 等顶层字段,并**重新注入**本地的控制器地址与密钥,防止订阅劫持控制通道。
+**单文件内核** —— Go `c-archive` 链入桌面应用。Windows 构建使用 Mihomo 依赖的 sing-tun；其 `go:embed` 按目标架构把 Wintun DLL 编入内核并从内存加载，因此不需要旁置的 `wintun.dll`。Windows TUN 仍需管理员权限；macOS TUN 使用独立 root helper 与 SCM_RIGHTS 传递 utun 文件描述符。
 
 ## 📦 安装
 
@@ -30,8 +31,8 @@ ProxyZms 把 mihomo 代理内核包装成一个开箱即用的桌面应用:它�
 | Windows x64 | `ProxyZms-windows-x64-setup.exe` |
 | Windows ARM64 | `ProxyZms-windows-arm64-setup.exe` |
 
-> Windows 安装包内嵌 `requireAdministrator` 清单,会以管理员身份运行(TUN/Wintun 需要)。
-> macOS 首次开启 TUN 时会弹出授权对话框,为内核二进制赋予创建 TUN 设备所需的权限。
+> Windows 应用内含 Mihomo 与对应架构的 Wintun DLL，不需要单独下载 `wintun.dll`；开启 TUN 时由内嵌 manifest 请求管理员权限。Dioxus 桌面应用仍使用系统 WebView2 运行时。
+> macOS 首次开启 TUN 时会弹出授权对话框安装 root helper；主 App 全程不提权。
 
 ### macOS 首次打开
 
@@ -47,7 +48,7 @@ dmg 内的 app 经过 **ad-hoc 签名**(可在 Apple Silicon 上运行),但**未
 
 ## 🛠️ 从源码构建
 
-需要 [Rust](https://rustup.rs/) 与 [Dioxus CLI](https://dioxuslabs.com/learn/0.7/getting_started/):
+需要 [Rust](https://rustup.rs/)、Go 1.24+ (CGO)、C 构建工具链与 [Dioxus CLI](https://dioxuslabs.com/learn/0.7/getting_started/)。macOS 安装 Xcode Command Line Tools；Windows 构建请使用仓库 GitHub Actions 的对应 runner/toolchain 配置。
 
 ```bash
 cargo install dioxus-cli            # 安装 dx
@@ -64,15 +65,15 @@ Tailwind 在 Dioxus 0.7 中自动启用(读取 `Cargo.toml` 同级的 `tailwind.
 ```
 src/
 ├─ main.rs          # App 根组件:context / 系统托盘 / 状态轮询 / 路由
-├─ bootstrap.rs     # 数据目录管理、内核下载、订阅拉取、控制权接管
+├─ bootstrap.rs     # 数据目录管理、默认配置与订阅拉取
 ├─ config.rs        # AppConfig,持久化到 <config_dir>/proxy-zms/config.json
 ├─ format.rs        # 速度 / 字节数格式化
 ├─ mihomo/
-│  ├─ api.rs        # External Controller REST 客户端
-│  ├─ process.rs    # Controller:内核进程生命周期 + 提权
-│  └─ types.rs      # API 响应的 serde 模型
+│  ├─ ffi.rs        # Go c-archive FFI 封装
+│  ├─ lifecycle.rs  # 内核生命周期与平台 TUN 管理
+│  └─ types.rs      # 内核数据模型
 └─ views/
-   ├─ dashboard.rs  # 状态页:引导状态机、自动启动、实时速度
+   ├─ flow.rs       # 状态页:引导状态机、自动启动、实时速度
    ├─ proxies.rs    # 节点分组 / 延迟测速 / TUN 开关
    ├─ connections.rs# 连接列表
    └─ settings.rs   # 设置编辑
@@ -80,7 +81,7 @@ src/
 
 ## 🛠️ 技术栈
 
-Rust · [Dioxus 0.7](https://dioxuslabs.com/)(desktop / WebView)· Tailwind CSS · [mihomo](https://github.com/MetaCubeX/mihomo) 内核 · GitHub Actions(三平台自动构建发布)
+Rust · Go cgo · [Dioxus 0.7](https://dioxuslabs.com/)(desktop / WebView) · Tailwind CSS · [mihomo](https://github.com/MetaCubeX/mihomo) · GitHub Actions(macOS / Windows 构建发布)
 
 ## 📄 许可证
 

@@ -81,7 +81,7 @@ func selectProxy(groupName, proxyName string) error {
 	if !ok || p == nil {
 		return fmt.Errorf("group not found: %s", groupName)
 	}
-	sel, ok := p.(interface {
+	sel, ok := p.Adapter().(interface {
 		Set(string) error
 		ForceSet(string)
 	})

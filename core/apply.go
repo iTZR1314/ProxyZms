@@ -34,12 +34,16 @@ func applyConfig(yaml string, selectedMap map[string]string) (string, error) {
 		if fbErr != nil {
 			return "", fmt.Errorf("fallback failed: %v (original: %w)", fbErr, err)
 		}
+		fb.General.Tun.Enable = false
 		executor.ApplyConfig(fb, true)
 		currentConfig = fb
 		isRunning.Store(true)
 		return fmt.Sprintf("config applied with fallback: %v", err), nil
 	}
 
+	// TUN 只允许用户点击开关后经 root helper 启动;订阅中的 enable:true
+	// 不能在普通用户进程 apply_config 时提前创建 utun。
+	cfg.General.Tun.Enable = false
 	executor.ApplyConfig(cfg, true)
 	currentConfig = cfg
 	if len(selectedMap) > 0 {
