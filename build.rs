@@ -7,6 +7,7 @@
 //!    `CVT1100: duplicate resource` / `LNK1123`。详见 proxyzms.rc 的注释。
 
 use std::env;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -71,6 +72,81 @@ fn which(name: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Windows x64 MSVC link.exe rejects Go linker's SEH metadata in `go.o`
+/// (LNK1223). Removing these sections affects native debugger stack unwinding
+/// through Go frames only; Go panic/recover uses its own stack metadata.
+fn strip_go_unwind_sections(objects: &[PathBuf]) -> Result<(), String> {
+    let mut found = false;
+    for object in objects {
+        if object.file_name().and_then(|name| name.to_str()) != Some("go.o") {
+            continue;
+        }
+        found = true;
+        let status = Command::new("llvm-objcopy")
+            .args(["--remove-section=.pdata", "--remove-section=.xdata"])
+            .arg(object)
+            .status()
+            .map_err(|e| format!("启动 llvm-objcopy 失败:{e}"))?;
+        if !status.success() {
+            return Err(format!("llvm-objcopy 处理 {} 失败", object.display()));
+        }
+    }
+    if !found {
+        return Err("Go c-archive 中找不到 go.o,无法处理 MSVC unwind sections".into());
+    }
+    Ok(())
+}
+
+/// 把 Go 生成的 GNU ar 文件重打包为 MSVC LIB,避免 link.exe 拒绝 LNK4003。
+fn repack_as_msvc_lib(archive: &Path, out_dir: &Path, strip_unwind: bool) -> Result<(), String> {
+    let extract_dir = out_dir.join("proxyzms_ar_extract");
+    let _ = fs::remove_dir_all(&extract_dir);
+    fs::create_dir_all(&extract_dir).map_err(|e| format!("创建 archive 临时目录失败:{e}"))?;
+
+    let result = (|| {
+        let status = Command::new("llvm-ar")
+            .args(["x"])
+            .arg(archive)
+            .current_dir(&extract_dir)
+            .status()
+            .map_err(|e| format!("启动 llvm-ar 失败:{e}"))?;
+        if !status.success() {
+            return Err("llvm-ar 解包 Go c-archive 失败".to_string());
+        }
+
+        let mut objects = fs::read_dir(&extract_dir)
+            .map_err(|e| format!("读取 archive 临时目录失败:{e}"))?
+            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+            .collect::<Vec<_>>();
+        objects.sort();
+        if objects.is_empty() {
+            return Err("Go c-archive 解包后没有 object 文件".to_string());
+        }
+        if strip_unwind {
+            strip_go_unwind_sections(&objects)?;
+        }
+
+        let repacked = out_dir.join("_proxyzms_core_repacked.lib");
+        let _ = fs::remove_file(&repacked);
+        let mut command = Command::new("lib.exe");
+        command
+            .arg("/nologo")
+            .arg(format!("/out:{}", repacked.display()));
+        command.args(&objects);
+        let status = command
+            .status()
+            .map_err(|e| format!("启动 lib.exe 失败:{e}"))?;
+        if !status.success() {
+            return Err("lib.exe 重打包 Go c-archive 失败".to_string());
+        }
+        fs::rename(&repacked, archive).map_err(|e| format!("替换 MSVC archive 失败:{e}"))?;
+        Ok(())
+    })();
+
+    let _ = fs::remove_dir_all(&extract_dir);
+    result
+}
+
 fn build_go_core() {
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR unset"));
     let go = env::var("GO").unwrap_or_else(|_| "go".to_string());
@@ -105,6 +181,12 @@ fn build_go_core() {
         .unwrap_or_else(|e| panic!("go build 无法启动:{e}"));
     if !status.success() {
         panic!("go build -buildmode=c-archive 失败({status})");
+    }
+
+    if goos == "windows" {
+        let strip_unwind = goarch == "amd64";
+        repack_as_msvc_lib(&lib, &out_dir, strip_unwind)
+            .unwrap_or_else(|e| panic!("准备 Windows Go archive 供 MSVC 链接失败:{e}"));
     }
 
     println!("cargo:rustc-link-search=native={}", out_dir.display());

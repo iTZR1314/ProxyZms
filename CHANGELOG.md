@@ -31,6 +31,8 @@ mihomo 以 Go c-archive 静态库形式链入 Rust 主程序，UI 与内核同�
 - exe 内嵌 `requireAdministrator` manifest，双击一次 UAC，整进程即管理员
 - Go 内核静态链入 exe；sing-tun v0.4.24 已按 amd64/arm64 用 `go:embed` 嵌入
   对应的 Wintun DLL，并通过内存加载，不需要用户另行下载或摆放 `wintun.dll`
+- 为兼容 Windows x64 MSVC 链接器，Go 对象的 SEH unwind section 会被移除；不影响 Go `panic/recover`，
+  但原生调试器无法沿 Go 栈展开
 - Windows TUN 不需要 macOS root helper / SCM_RIGHTS；仍需 UAC 管理员权限
 
 ### 开发者体验
