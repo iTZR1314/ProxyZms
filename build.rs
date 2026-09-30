@@ -41,25 +41,6 @@ fn go_target() -> (&'static str, &'static str) {
     (goos, goarch)
 }
 
-/// Windows c-archive 使用 MSVC ABI 的 Clang 产物。Cargo 项目配置让 Rust 使用
-/// lld-link:MSVC link.exe 会拒绝 Go linker 生成的 `.pdata`(LNK1223)。
-/// Go 的 CC 支持在命令后附 target 参数。
-fn go_cc(goos: &str, goarch: &str) -> Option<String> {
-    if goos == "windows" {
-        let target = match goarch {
-            "amd64" => "x86_64-pc-windows-msvc",
-            "arm64" => "aarch64-pc-windows-msvc",
-            _ => unreachable!("go_target 已校验 GOARCH"),
-        };
-        if which("clang") {
-            return Some(format!("clang --target={target}"));
-        }
-        panic!("Windows cgo 构建需要 Clang (MSVC target: {target});请检查 runner 的 LLVM 安装");
-    }
-    // darwin / linux / 本机:Go 自动选择平台 C 编译器
-    None
-}
-
 /// go 只认 `go version`(不认 --version);gcc/clang 用 --version。
 fn which(name: &str) -> bool {
     let arg = if name == "go" { "version" } else { "--version" };
@@ -70,6 +51,35 @@ fn which(name: &str) -> bool {
         .status()
         .map(|s| s.success())
         .unwrap_or(false)
+}
+
+/// Windows arm64 的 Go runtime/cgo 会传 `-mthreads`;这是 MinGW 参数,Clang
+/// 的 MSVC target 不接受。单独编译一个 host 可执行 wrapper,只在 arm64 过滤该 flag。
+fn build_windows_cgo_wrapper(go: &str, core_dir: &Path, out_dir: &Path) -> PathBuf {
+    let (host_goos, host_goarch) = match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("macos", "x86_64") => ("darwin", "amd64"),
+        ("macos", "aarch64") => ("darwin", "arm64"),
+        ("windows", "x86_64") => ("windows", "amd64"),
+        ("windows", "aarch64") => ("windows", "arm64"),
+        ("linux", "x86_64") => ("linux", "amd64"),
+        ("linux", "aarch64") => ("linux", "arm64"),
+        (os, arch) => panic!("不支持在 host {os}/{arch} 上编译 Windows cgo wrapper"),
+    };
+    let wrapper = out_dir.join("proxyzms-cgo-cc.exe");
+    let status = Command::new(go)
+        .current_dir(core_dir)
+        .args(["build", "-o"])
+        .arg(&wrapper)
+        .arg("./cgo_cc")
+        .env("GOOS", host_goos)
+        .env("GOARCH", host_goarch)
+        .env("CGO_ENABLED", "0")
+        .status()
+        .unwrap_or_else(|e| panic!("构建 Windows cgo wrapper 失败:{e}"));
+    if !status.success() {
+        panic!("构建 Windows cgo wrapper 失败({status})");
+    }
+    wrapper
 }
 
 /// Windows x64 MSVC-compatible linkers reject Go linker's SEH metadata in `go.o`
@@ -179,6 +189,11 @@ fn build_go_core() {
     let core_dir = Path::new(&manifest).join("core");
     let lib = out_dir.join("libproxyzms_core.a");
     let (goos, goarch) = go_target();
+    let cgo_wrapper = if goos == "windows" {
+        Some(build_windows_cgo_wrapper(&go, &core_dir, &out_dir))
+    } else {
+        None
+    };
 
     let mut cmd = Command::new(&go);
     cmd.current_dir(&core_dir)
@@ -194,8 +209,14 @@ fn build_go_core() {
         .env("CGO_ENABLED", "1")
         .env("GOOS", goos)
         .env("GOARCH", goarch);
-    if let Some(cc) = go_cc(goos, goarch) {
-        cmd.env("CC", cc);
+    if let Some(wrapper) = cgo_wrapper {
+        let target = if goarch == "arm64" {
+            "aarch64-pc-windows-msvc"
+        } else {
+            "x86_64-pc-windows-msvc"
+        };
+        cmd.env("CC", format!("\"{}\"", wrapper.display()))
+            .env("PROXYZMS_CGO_TARGET", target);
     }
     let output = cmd
         .output()
