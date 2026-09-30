@@ -34,8 +34,6 @@ jobs:
             platform: windows
             target: aarch64-pc-windows-msvc
             package-types: nsis
-            # windows/arm64 cgo 交叉编译需 UCRT MinGW-w64 aarch64 gcc
-            needs-mingw-arm64: true
 
     steps:
       - uses: actions/checkout@v5
@@ -52,6 +50,10 @@ jobs:
           go-version: '1.25.x'
           cache: true
           cache-dependency-path: core/go.sum
+
+      - name: Verify Clang for Windows cgo
+        if: runner.os == 'Windows'
+        run: clang --version
 
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
@@ -70,15 +72,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: cargo binstall dioxus-cli@0.7.10 -y --force --disable-strategies compile
-
-      # windows/arm64:Go cgo 需要 aarch64-w64-mingw32-gcc(UCRT 变体)。
-      # windows-11-arm 镜像自带 msys2;装 ucrt64 工具链并补进 PATH。
-      - name: Install MinGW-w64 aarch64 (windows-arm64 only)
-        if: matrix.needs-mingw-arm64
-        shell: C:\msys64\usr\bin\bash.exe -l {0}
-        run: |
-          pacman -Sy --noconfirm mingw-w64-ucrt-aarch64-gcc
-          echo "C:\msys64\ucrt64\bin" >> "$GITHUB_PATH"
 
       - name: Bundle
         # 原生 runner 上 dx 默认按宿主架构构建,无需交叉编译。

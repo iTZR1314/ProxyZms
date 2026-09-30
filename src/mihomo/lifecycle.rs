@@ -96,7 +96,7 @@ impl KernelLifecycle {
 
     /// 设置 TUN 开关。**macOS 需要 helper fd;Windows 直接内核**。
     /// 开启失败会把错误往外抛(不静默),UI 应保持 OFF。
-    pub async fn set_tun(&self, enable: bool, cfg: &AppConfig) -> Result<(), String> {
+    pub async fn set_tun(&self, enable: bool, _cfg: &AppConfig) -> Result<(), String> {
         eprintln!("[zms] [LC] set_tun({})", if enable { "ON" } else { "OFF" });
         if !enable {
             let res = kernel().set_tun(false).await;
@@ -124,7 +124,7 @@ impl KernelLifecycle {
         {
             // fd 走 helper → 内核注入。失败返回 Err,UI 保持 OFF,不误判成功。
             eprintln!("[zms] [LC] ensure_tun_fd...");
-            let fd = helper::ensure_tun_fd(cfg).await?;
+            let fd = helper::ensure_tun_fd(_cfg).await?;
             eprintln!("[zms] [LC] got fd={}, calling adopt_tun_fd", fd);
             kernel().adopt_tun_fd(fd).await?;
             eprintln!("[zms] [LC] adopt_tun_fd OK, calling set_tun(true)");

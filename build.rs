@@ -40,22 +40,21 @@ fn go_target() -> (&'static str, &'static str) {
     (goos, goarch)
 }
 
-/// cgo 交叉编译时的 CC。本机编译 darwin 不需要设置;
-/// Windows/arm64(GHA windows-11-arm)需 UCRT MinGW-w64 aarch64,
-/// 否则退回 clang --target(镜像里有 LLVM 15,实测可用)。
+/// Windows c-archive 必须用 MSVC ABI 的 Clang 产物,否则 link.exe 会因 Go/MinGW
+/// 的 `.pdata` unwind 格式不兼容而报 LNK1223。Go 的 CC 支持在命令后附 target 参数。
 fn go_cc(goos: &str, goarch: &str) -> Option<String> {
-    if goos == "windows" && goarch == "arm64" {
-        // msys2 ucrt64 添加进 PATH 后的标准名
-        for name in ["aarch64-w64-mingw32-gcc", "clang"] {
-            if which(name) {
-                return Some(name.to_string());
-            }
+    if goos == "windows" {
+        let target = match goarch {
+            "amd64" => "x86_64-pc-windows-msvc",
+            "arm64" => "aarch64-pc-windows-msvc",
+            _ => unreachable!("go_target 已校验 GOARCH"),
+        };
+        if which("clang") {
+            return Some(format!("clang --target={target}"));
         }
-        panic!(
-            "windows/arm64 cgo 需要 aarch64-w64-mingw32-gcc(推荐,见 release.yml)或 clang --target=aarch64-windows-msvc"
-        );
+        panic!("Windows cgo 构建需要 Clang (MSVC target: {target});请检查 runner 的 LLVM 安装");
     }
-    // darwin / windows-x64 / linux / 本机:Go 会自动选 clang/gcc
+    // darwin / linux / 本机:Go 自动选择平台 C 编译器
     None
 }
 
@@ -163,7 +162,9 @@ fn build_helper(out_dir: &Path, go: &str, goos: &str, goarch: &str) {
         Ok(s) if s.success() => {}
         _ => {
             // 失败:写占位,主程序能编译但 is_installable()=false
-            eprintln!("[build] proxyzms-helper 构建失败;macOS TUN 将不可用(可重跑 cargo build 重试)");
+            eprintln!(
+                "[build] proxyzms-helper 构建失败;macOS TUN 将不可用(可重跑 cargo build 重试)"
+            );
             let _ = std::fs::write(&out, b"");
         }
     }

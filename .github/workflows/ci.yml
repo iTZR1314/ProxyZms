@@ -44,6 +44,10 @@ jobs:
           cache: true
           cache-dependency-path: core/go.sum
 
+      - name: Verify Clang for Windows cgo
+        if: runner.os == 'Windows'
+        run: clang --version
+
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
         with:

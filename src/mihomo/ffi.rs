@@ -30,7 +30,9 @@ extern "C" {
     fn proxyzms_get_mode() -> *mut c_char;
     fn proxyzms_set_tun(enable: c_int) -> *mut c_char;
     fn proxyzms_set_lan_share(enable: c_int, port: c_int) -> *mut c_char;
+    #[cfg(target_os = "macos")]
     fn proxyzms_adopt_tun(fd: c_int) -> *mut c_char;
+    #[cfg(target_os = "macos")]
     fn proxyzms_get_tun_setup() -> *mut c_char;
     fn proxyzms_set_log_level(level: *mut c_char) -> *mut c_char;
     fn proxyzms_validate_config(yaml: *mut c_char) -> *mut c_char;
@@ -175,10 +177,10 @@ impl Kernel {
         let map = c_string(&serde_json::to_string(selected_map).map_err(|e| e.to_string())?)?;
         blocking(move || unsafe {
             // data 可能是 {"warning":..} 或 true(无 warning 时)
-            let v: serde_json::Value =
-                parse_envelope(&read_json(|| proxyzms_apply_config(yaml.into_raw(), map.into_raw()))?)?;
-            Ok(v
-                .get("warning")
+            let v: serde_json::Value = parse_envelope(&read_json(|| {
+                proxyzms_apply_config(yaml.into_raw(), map.into_raw())
+            })?)?;
+            Ok(v.get("warning")
                 .and_then(|w| w.as_str())
                 .filter(|w| !w.is_empty())
                 .map(str::to_string))
@@ -203,9 +205,11 @@ impl Kernel {
 
     pub async fn set_mode(&self, mode: &str) -> Result<(), String> {
         let mode = c_string(mode)?;
-        blocking(move || unsafe { parse_envelope(&read_json(|| proxyzms_set_mode(mode.into_raw()))?) })
-            .await
-            .map(|_: bool| ())
+        blocking(move || unsafe {
+            parse_envelope(&read_json(|| proxyzms_set_mode(mode.into_raw()))?)
+        })
+        .await
+        .map(|_: bool| ())
     }
 
     pub async fn get_mode(&self) -> Result<String, String> {
@@ -233,6 +237,7 @@ impl Kernel {
 
     /// 注入 macOS helper 建的 utun fd。下一次 `set_tun(true)` 将接管它。
     /// fd <0 清除注入(回到自创建路径,需 root)。
+    #[cfg(target_os = "macos")]
     pub async fn adopt_tun_fd(&self, fd: i32) -> Result<(), String> {
         blocking(move || unsafe { parse_envelope(&read_json(|| proxyzms_adopt_tun(fd))?) })
             .await
@@ -240,11 +245,9 @@ impl Kernel {
     }
 
     /// 返回 mihomo 解析后的有效 TUN 参数,供 macOS root helper 配置 utun 地址/路由。
+    #[cfg(target_os = "macos")]
     pub async fn get_tun_setup(&self) -> Result<serde_json::Value, String> {
-        blocking(|| unsafe {
-            parse_envelope(&read_json(|| proxyzms_get_tun_setup())?)
-        })
-        .await
+        blocking(|| unsafe { parse_envelope(&read_json(|| proxyzms_get_tun_setup())?) }).await
     }
 
     pub async fn set_log_level(&self, level: &str) -> Result<(), String> {
@@ -321,7 +324,9 @@ impl Kernel {
     #[allow(dead_code)]
     pub async fn get_traffic(&self, total: bool) -> Result<Traffic, String> {
         blocking(move || unsafe {
-            parse_envelope(&read_json(|| proxyzms_get_traffic(if total { 1 } else { 0 }))?)
+            parse_envelope(&read_json(|| {
+                proxyzms_get_traffic(if total { 1 } else { 0 })
+            })?)
         })
         .await
     }
@@ -332,7 +337,9 @@ impl Kernel {
     pub async fn update_subscription(&self, name: &str) -> Result<(), String> {
         let name = c_string(name)?;
         blocking(move || unsafe {
-            parse_envelope(&read_json(|| proxyzms_update_subscription(name.into_raw()))?)
+            parse_envelope(&read_json(|| {
+                proxyzms_update_subscription(name.into_raw())
+            })?)
         })
         .await
         .map(|_: bool| ())
