@@ -72,7 +72,7 @@ fn which(name: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Windows x64 MSVC link.exe rejects Go linker's SEH metadata in `go.o`
+/// Windows x64 MSVC-compatible linkers reject Go linker's SEH metadata in `go.o`
 /// (LNK1223). Removing these sections affects native debugger stack unwinding
 /// through Go frames only; Go panic/recover uses its own stack metadata.
 fn strip_go_unwind_sections(objects: &[PathBuf]) -> Result<(), String> {
@@ -97,7 +97,7 @@ fn strip_go_unwind_sections(objects: &[PathBuf]) -> Result<(), String> {
     Ok(())
 }
 
-/// 把 Go 生成的 GNU ar 文件重打包为 MSVC LIB,避免 link.exe 拒绝 LNK4003。
+/// 把 Go 生成的 GNU ar 文件重打包为 MSVC LIB,避免 MSVC linker 拒绝 LNK4003。
 fn repack_as_msvc_lib(archive: &Path, out_dir: &Path, strip_unwind: bool) -> Result<(), String> {
     let extract_dir = out_dir.join("proxyzms_ar_extract");
     let _ = fs::remove_dir_all(&extract_dir);
@@ -128,16 +128,16 @@ fn repack_as_msvc_lib(archive: &Path, out_dir: &Path, strip_unwind: bool) -> Res
 
         let repacked = out_dir.join("_proxyzms_core_repacked.lib");
         let _ = fs::remove_file(&repacked);
-        let mut command = Command::new("lib.exe");
+        let mut command = Command::new("llvm-lib");
         command
             .arg("/nologo")
             .arg(format!("/out:{}", repacked.display()));
         command.args(&objects);
         let status = command
             .status()
-            .map_err(|e| format!("启动 lib.exe 失败:{e}"))?;
+            .map_err(|e| format!("启动 llvm-lib 失败:{e}"))?;
         if !status.success() {
-            return Err("lib.exe 重打包 Go c-archive 失败".to_string());
+            return Err("llvm-lib 重打包 Go c-archive 失败".to_string());
         }
         fs::rename(&repacked, archive).map_err(|e| format!("替换 MSVC archive 失败:{e}"))?;
         Ok(())

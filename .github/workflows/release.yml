@@ -57,7 +57,7 @@ jobs:
           clang --version
           llvm-ar --version
           llvm-objcopy --version
-          Get-Command lib.exe
+          llvm-lib --version
 
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
