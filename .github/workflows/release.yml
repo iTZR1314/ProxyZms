@@ -81,6 +81,20 @@ jobs:
         # 原生 runner 上 dx 默认按宿主架构构建,无需交叉编译。
         run: dx bundle --verbose --raw-json-diagnostics --release --platform ${{ matrix.platform }} --package-types ${{ matrix.package-types }}
 
+      - name: Show Windows Go archive diagnostics
+        if: failure() && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $files = Get-ChildItem -Path target -Recurse -File -Filter proxyzms-build-diagnostic.txt -ErrorAction SilentlyContinue
+          if ($files) {
+            foreach ($file in $files) {
+              Write-Output "--- $($file.FullName) ---"
+              Get-Content $file.FullName
+            }
+          } else {
+            Write-Output "No Go archive diagnostic file was produced."
+          }
+
       - name: Verify Windows bundle has no Wintun sidecar
         if: runner.os == 'Windows'
         shell: pwsh

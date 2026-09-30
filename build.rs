@@ -82,13 +82,18 @@ fn strip_go_unwind_sections(objects: &[PathBuf]) -> Result<(), String> {
             continue;
         }
         found = true;
-        let status = Command::new("llvm-objcopy")
+        let output = Command::new("llvm-objcopy")
             .args(["--remove-section=.pdata", "--remove-section=.xdata"])
             .arg(object)
-            .status()
+            .output()
             .map_err(|e| format!("启动 llvm-objcopy 失败:{e}"))?;
-        if !status.success() {
-            return Err(format!("llvm-objcopy 处理 {} 失败", object.display()));
+        if !output.status.success() {
+            return Err(format!(
+                "llvm-objcopy 处理 {} 失败: {}{}",
+                object.display(),
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            ));
         }
         println!("cargo:warning=Removed Go x64 SEH unwind sections from go.o");
     }
@@ -105,14 +110,18 @@ fn repack_as_msvc_lib(archive: &Path, out_dir: &Path, strip_unwind: bool) -> Res
     fs::create_dir_all(&extract_dir).map_err(|e| format!("创建 archive 临时目录失败:{e}"))?;
 
     let result = (|| {
-        let status = Command::new("llvm-ar")
+        let output = Command::new("llvm-ar")
             .args(["x"])
             .arg(archive)
             .current_dir(&extract_dir)
-            .status()
+            .output()
             .map_err(|e| format!("启动 llvm-ar 失败:{e}"))?;
-        if !status.success() {
-            return Err("llvm-ar 解包 Go c-archive 失败".to_string());
+        if !output.status.success() {
+            return Err(format!(
+                "llvm-ar 解包 Go c-archive 失败: {}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            ));
         }
 
         let mut objects = fs::read_dir(&extract_dir)
@@ -135,11 +144,15 @@ fn repack_as_msvc_lib(archive: &Path, out_dir: &Path, strip_unwind: bool) -> Res
             .arg("/nologo")
             .arg(format!("/out:{}", repacked.display()));
         command.args(&objects);
-        let status = command
-            .status()
+        let output = command
+            .output()
             .map_err(|e| format!("启动 llvm-lib 失败:{e}"))?;
-        if !status.success() {
-            return Err("llvm-lib 重打包 Go c-archive 失败".to_string());
+        if !output.status.success() {
+            return Err(format!(
+                "llvm-lib 重打包 Go c-archive 失败: {}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            ));
         }
         fs::rename(&repacked, archive).map_err(|e| format!("替换 MSVC archive 失败:{e}"))?;
         println!("cargo:warning=Repacked Go c-archive with llvm-lib for MSVC");
@@ -148,6 +161,11 @@ fn repack_as_msvc_lib(archive: &Path, out_dir: &Path, strip_unwind: bool) -> Res
 
     let _ = fs::remove_dir_all(&extract_dir);
     result
+}
+
+fn write_windows_build_diagnostic(out_dir: &Path, details: &str) {
+    let path = out_dir.join("proxyzms-build-diagnostic.txt");
+    let _ = fs::write(path, details);
 }
 
 fn build_go_core() {
@@ -179,17 +197,29 @@ fn build_go_core() {
     if let Some(cc) = go_cc(goos, goarch) {
         cmd.env("CC", cc);
     }
-    let status = cmd
-        .status()
+    let output = cmd
+        .output()
         .unwrap_or_else(|e| panic!("go build 无法启动:{e}"));
-    if !status.success() {
-        panic!("go build -buildmode=c-archive 失败({status})");
+    if !output.status.success() {
+        let details = format!(
+            "go build -buildmode=c-archive failed ({})\nstdout:\n{}\nstderr:\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        if goos == "windows" {
+            write_windows_build_diagnostic(&out_dir, &details);
+        }
+        panic!("{details}");
     }
 
     if goos == "windows" {
         let strip_unwind = goarch == "amd64";
-        repack_as_msvc_lib(&lib, &out_dir, strip_unwind)
-            .unwrap_or_else(|e| panic!("准备 Windows Go archive 供 MSVC 链接失败:{e}"));
+        println!("cargo:warning=Preparing Windows Go archive for MSVC linking");
+        if let Err(e) = repack_as_msvc_lib(&lib, &out_dir, strip_unwind) {
+            write_windows_build_diagnostic(&out_dir, &e);
+            panic!("准备 Windows Go archive 供 MSVC 链接失败:{e}");
+        }
     }
 
     println!("cargo:rustc-link-search=native={}", out_dir.display());
