@@ -79,7 +79,7 @@ jobs:
 
       - name: Bundle
         # 原生 runner 上 dx 默认按宿主架构构建,无需交叉编译。
-        run: dx bundle --release --platform ${{ matrix.platform }} --package-types ${{ matrix.package-types }}
+        run: dx bundle --verbose --raw-json-diagnostics --release --platform ${{ matrix.platform }} --package-types ${{ matrix.package-types }}
 
       - name: Verify Windows bundle has no Wintun sidecar
         if: runner.os == 'Windows'

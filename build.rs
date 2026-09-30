@@ -90,6 +90,7 @@ fn strip_go_unwind_sections(objects: &[PathBuf]) -> Result<(), String> {
         if !status.success() {
             return Err(format!("llvm-objcopy 处理 {} 失败", object.display()));
         }
+        println!("cargo:warning=Removed Go x64 SEH unwind sections from go.o");
     }
     if !found {
         return Err("Go c-archive 中找不到 go.o,无法处理 MSVC unwind sections".into());
@@ -122,6 +123,7 @@ fn repack_as_msvc_lib(archive: &Path, out_dir: &Path, strip_unwind: bool) -> Res
         if objects.is_empty() {
             return Err("Go c-archive 解包后没有 object 文件".to_string());
         }
+        println!("cargo:warning=Extracted Go c-archive with llvm-ar");
         if strip_unwind {
             strip_go_unwind_sections(&objects)?;
         }
@@ -140,6 +142,7 @@ fn repack_as_msvc_lib(archive: &Path, out_dir: &Path, strip_unwind: bool) -> Res
             return Err("llvm-lib 重打包 Go c-archive 失败".to_string());
         }
         fs::rename(&repacked, archive).map_err(|e| format!("替换 MSVC archive 失败:{e}"))?;
+        println!("cargo:warning=Repacked Go c-archive with llvm-lib for MSVC");
         Ok(())
     })();
 
