@@ -146,6 +146,13 @@ mod imp {
             let arg = plist.find(LAUNCH_ARG).expect("应带自启动参数");
             assert!(exe < arg, "参数必须排在可执行文件之后");
         }
+
+        #[test]
+        fn detects_launched_at_login_via_env() {
+            std::env::set_var("XPC_SERVICE_NAME", LAUNCH_AGENT_LABEL);
+            assert!(super::super::launched_at_login());
+            std::env::remove_var("XPC_SERVICE_NAME");
+        }
     }
 }
 
@@ -248,9 +255,27 @@ pub fn set_enabled(enable: bool) -> Result<(), String> {
     imp::set_enabled(enable)
 }
 
-/// 本次是否由开机自启动拉起(命令行带 [`LAUNCH_ARG`])。
+/// 本次是否由开机自启动拉起(命令行带 [`LAUNCH_ARG`]，或 macOS 上由 launchd 托管拉起)。
 pub fn launched_at_login() -> bool {
-    std::env::args().any(|a| a == LAUNCH_ARG)
+    if std::env::args().any(|a| a == LAUNCH_ARG) {
+        return true;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        // launchd 拉起 LaunchAgent 时必定注入 XPC_SERVICE_NAME=<label>。
+        // 即使旧版 plist 尚未更新命令行参数，也能 100% 准确识别为自启动。
+        if std::env::var("XPC_SERVICE_NAME").is_ok_and(|v| v == LAUNCH_AGENT_LABEL) {
+            return true;
+        }
+    }
+    false
+}
+
+/// 若当前平台已启用自启动，检查并同步最新的启动配置（自动补齐 --autostart 参数并校正当前程序路径）。
+pub fn sync_if_enabled() {
+    if is_enabled() {
+        let _ = set_enabled(true);
+    }
 }
 
 /// 当前平台是否支持自启动开关。

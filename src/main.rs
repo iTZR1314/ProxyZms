@@ -202,6 +202,16 @@ fn main() {
         std::process::exit(0);
     });
 
+    // 检查并自动同步自启动项（补齐 --autostart 参数与当前路径）
+    autostart::sync_if_enabled();
+
+    // macOS: 若本次为自启动拉起，在 AppKit 初始化阶段立即切换为 Accessory 策略，
+    // 隐藏 Dock 图标，避免启动时闪烁 Dock 栏。
+    #[cfg(target_os = "macos")]
+    if autostart::launched_at_login() {
+        set_dock_visible(false);
+    }
+
     #[cfg(feature = "desktop")]
     {
         use dioxus::desktop::tao::dpi::LogicalSize;
@@ -471,11 +481,12 @@ fn App() -> Element {
     use_effect(|| {
         #[cfg(target_os = "macos")]
         {
-            set_dock_icon();
-            // 开机自启动:窗口不显示,Dock 图标也收起,只留菜单栏托盘。
+            // 开机自启动:窗口不显示,Dock 图标收起,只留菜单栏托盘。
             // 之后 show_main_window 会把 Regular 策略和 Dock 图标恢复回来。
             if autostart::launched_at_login() {
                 set_dock_visible(false);
+            } else {
+                set_dock_icon();
             }
         }
     });
@@ -703,6 +714,11 @@ fn App() -> Element {
         };
 
         let win = use_window();
+        use_hook(|| {
+            if autostart::launched_at_login() {
+                win.set_visible(false);
+            }
+        });
 
         // macOS:应用已在运行时点它的程序坞/访达/启动台图标,AppKit 会发
         // `applicationShouldHandleReopen:`(tao 暴露为 `Event::Reopen`)。
