@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.3.2 — 2026-10-08
+
+修复 macOS 上「开机启动」勾选后实际不生效的问题。
+
+### 修复
+
+- **macOS:开机启动勾选了却不生效**:launchd 的 disabled 覆盖表优先于 LaunchAgent plist,
+  label 一旦被标成 disabled(如在系统设置 → 登录项里关过开关),plist 写得再对也不会在登录时
+  加载,而设置页只看 plist 是否存在,于是勾选框显示「开」、实际没开。现在开启时会补一次
+  `launchctl enable` 清掉 disabled 标记,勾选框状态也同时检查该覆盖表
+- Windows 走注册表 Run 项,不受影响
+
 ## v0.3.1 — 2026-10-08
 
 FFI 内核的内存 / 线程问题修复(以 macOS 为主)、退出清理统一、设置页新增诊断面板。
