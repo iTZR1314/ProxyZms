@@ -1,6 +1,7 @@
 use crate::autostart;
 use crate::bootstrap;
 use crate::config::AppConfig;
+use crate::diag;
 #[cfg(target_os = "macos")]
 use crate::helper;
 use crate::mihomo::kernel;
@@ -400,6 +401,8 @@ pub fn Settings() -> Element {
                 }
             }
 
+            DiagnosticsSettings {}
+
             div { class: "flex items-center gap-4",
                 button {
                     class: "px-8 py-2.5 bg-black text-white text-sm uppercase tracking-[0.15em] hover:bg-[var(--accent)] transition-colors",
@@ -500,6 +503,121 @@ fn MacosHelperSettings() -> Element {
 
     #[cfg(not(target_os = "macos"))]
     rsx! {}
+}
+
+fn fmt_value(v: i64, kb: bool) -> String {
+    if kb {
+        format!("{:.1} MB", v as f64 / 1024.0)
+    } else {
+        v.to_string()
+    }
+}
+
+fn fmt_delta(v: i64, kb: bool) -> String {
+    if kb {
+        format!("{:+.1} MB", v as f64 / 1024.0)
+    } else {
+        format!("{v:+}")
+    }
+}
+
+/// 泄漏排查面板:先「记为基线」,做一轮操作后「刷新」,看相对基线的增量。
+#[component]
+fn DiagnosticsSettings() -> Element {
+    let mut snap = use_signal(|| None::<Result<diag::Snapshot, String>>);
+    let mut base = use_signal(diag::baseline);
+    let mut loading = use_signal(|| false);
+
+    // 每次进入设置页自动取一次(用户通常是在别的页面操作完才切过来)
+    use_future(move || async move {
+        snap.set(Some(diag::snapshot().await));
+    });
+
+    let refresh = move |_| {
+        if loading() {
+            return;
+        }
+        loading.set(true);
+        spawn(async move {
+            snap.set(Some(diag::snapshot().await));
+            loading.set(false);
+        });
+    };
+
+    let mark_base = move |_| {
+        if let Some(Ok(s)) = snap() {
+            diag::set_baseline(s.clone());
+            base.set(Some(s));
+        }
+    };
+
+    let table = match snap() {
+        Some(Ok(cur)) => Some(Ok(diag::rows(&cur, base().as_ref()))),
+        Some(Err(e)) => Some(Err(e)),
+        None => None,
+    };
+
+    rsx! {
+        section {
+            div { class: "text-[11px] uppercase tracking-[0.2em] text-[var(--accent)] border-b border-black pb-2 mb-4", "06 / 诊断" }
+            div { class: "space-y-4",
+                div { class: "text-xs text-neutral-600 leading-relaxed",
+                    "排查资源泄漏:关闭 TUN → 点「记为基线」→ 开关 TUN 10 次并停在关闭 → 等 5 秒 → 回到本页点「刷新」。\
+                     看「相对基线」一列:某一项随操作次数成比例上涨(例如 10 次涨约 10 或 20)就是泄漏;\
+                     内存 RSS 小幅波动、socket 随流量变化属正常。"
+                }
+                match table {
+                    Some(Ok(rows)) => rsx! {
+                        div { class: "text-sm",
+                            div { class: "flex text-[11px] uppercase tracking-[0.15em] text-neutral-500 pb-1 border-b border-neutral-300",
+                                div { class: "flex-1", "指标" }
+                                div { class: "w-28 text-right", "当前" }
+                                div { class: "w-28 text-right", "相对基线" }
+                            }
+                            for r in rows {
+                                div { class: "flex py-1 border-b border-neutral-200 tabular-nums",
+                                    div {
+                                        class: if r.sub { "flex-1 pl-4 text-neutral-500" } else { "flex-1" },
+                                        "{r.label}"
+                                    }
+                                    div { class: "w-28 text-right", "{fmt_value(r.cur, r.kb)}" }
+                                    div {
+                                        class: if r.delta.unwrap_or(0) > 0 { "w-28 text-right text-[var(--accent)]" } else { "w-28 text-right text-neutral-500" },
+                                        match r.delta {
+                                            Some(d) => rsx! { "{fmt_delta(d, r.kb)}" },
+                                            None => rsx! { "—" },
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    Some(Err(e)) => rsx! {
+                        div { class: "text-xs text-[var(--accent)]", "读取诊断数据失败:{e}" }
+                    },
+                    None => rsx! {
+                        div { class: "text-xs text-neutral-500", "读取中…" }
+                    },
+                }
+                div { class: "flex items-center gap-4 pt-1",
+                    button {
+                        class: "px-6 py-2 border border-[var(--accent)] text-[var(--accent)] text-sm uppercase tracking-[0.15em] hover:bg-[var(--accent)] hover:text-white disabled:opacity-40 transition-colors",
+                        disabled: loading(),
+                        onclick: refresh,
+                        if loading() { "读取中…" } else { "刷新" }
+                    }
+                    button {
+                        class: "px-6 py-2 border border-neutral-400 text-neutral-600 text-sm uppercase tracking-[0.15em] hover:border-[var(--accent)] hover:text-[var(--accent)] transition-colors",
+                        onclick: mark_base,
+                        "记为基线"
+                    }
+                    if base().is_some() {
+                        span { class: "text-xs text-neutral-500", "已设置基线" }
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[component]

@@ -17,6 +17,7 @@
 //! 时落盘。这样 .app 结构不变,仍是单文件分发。
 use crate::config::AppConfig;
 use std::io::Write;
+use std::os::fd::{FromRawFd, OwnedFd};
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -75,7 +76,8 @@ pub fn ping() -> Result<(), String> {
 
 /// 请求 helper 建 utun 并通过 SCM_RIGHTS 拿 fd 回来。
 /// TUN 地址和路由参数从已应用的 mihomo 配置读取,保证 root helper 与内核一致。
-pub async fn ensure_tun_fd(_cfg: &AppConfig) -> Result<i32, String> {
+/// 返回的 `OwnedFd` 由调用方持有,drop 即关闭(Go 侧 adopt 时会自己 dup 一份)。
+pub async fn ensure_tun_fd(_cfg: &AppConfig) -> Result<OwnedFd, String> {
     if !is_installable() {
         return Err(
             "helper 二进制未嵌入(构建时 Go 缺失?)。请用完整 dx bundle / cargo build 重新打包"
@@ -140,7 +142,7 @@ fn roundtrip(req_json: &str, expect_fd: bool) -> Result<HelperResponse, String> 
     parse_response(&buf, fd)
 }
 
-fn request_tun_on(tun_setup: &serde_json::Value) -> Result<i32, String> {
+fn request_tun_on(tun_setup: &serde_json::Value) -> Result<OwnedFd, String> {
     // 固定 utun9:避免 sing-tun 在未指定名字时不暴露 fd 的问题。
     // utun0-8 常被系统/其它 VPN 占,9 起步撞车率低;helper 端 tun.New
     // 遇到 EBUSY 会失败,主 App 会在下一轮 install/retry 中换名字(目前未实现轮换)。
@@ -168,10 +170,10 @@ struct HelperResponse {
     #[serde(default)]
     version: Option<u32>,
     #[serde(skip)]
-    fd: Option<i32>,
+    fd: Option<OwnedFd>,
 }
 
-fn parse_response(buf: &[u8], fd: Option<i32>) -> Result<HelperResponse, String> {
+fn parse_response(buf: &[u8], fd: Option<OwnedFd>) -> Result<HelperResponse, String> {
     let text = std::str::from_utf8(buf).map_err(|_| "helper 响应非 UTF-8".to_string())?;
     let mut resp: HelperResponse =
         serde_json::from_str(text.trim()).map_err(|e| format!("helper 响应解析失败:{e}"))?;
@@ -192,7 +194,10 @@ fn read_line(stream: &UnixStream, buf: &mut [u8]) -> Result<usize, String> {
 
 /// 通过 SCM_RIGHTS 从 unix socket 收一个 fd;同时把数据字节读进 `buf`
 /// (helper 端 sendmsg 的 payload 是 1 字节占位,JSON 响应随后用普通 read 到)。
-fn recv_fd(stream: &UnixStream) -> Result<i32, String> {
+///
+/// fd 一收到就包进 `OwnedFd`:此后任何一步失败(读 JSON 超时、解析失败……)
+/// 都会随 drop 自动关闭,不会在主进程里泄漏。
+fn recv_fd(stream: &UnixStream) -> Result<OwnedFd, String> {
     use nix::sys::socket::{recvmsg, ControlMessageOwned, MsgFlags};
     use std::io::IoSliceMut;
 
@@ -206,13 +211,15 @@ fn recv_fd(stream: &UnixStream) -> Result<i32, String> {
     let msg = recvmsg::<()>(raw, &mut iov, Some(&mut cmsg), MsgFlags::empty())
         .map_err(|e| format!("recvmsg 失败:{e}"))?;
 
-    for c in msg
-        .cmsgs()
-        .map_err(|e| format!("cmsg 解析失败:{e}"))?
-    {
+    for c in msg.cmsgs().map_err(|e| format!("cmsg 解析失败:{e}"))? {
         if let ControlMessageOwned::ScmRights(fds) = c {
-            if let Some(&fd) = fds.first() {
-                return Ok(fd);
+            // 多余的 fd(helper 不会发,但内核照单全收)随 Vec 一起关闭
+            let mut owned: Vec<OwnedFd> = fds
+                .into_iter()
+                .map(|fd| unsafe { OwnedFd::from_raw_fd(fd) })
+                .collect();
+            if !owned.is_empty() {
+                return Ok(owned.swap_remove(0));
             }
         }
     }

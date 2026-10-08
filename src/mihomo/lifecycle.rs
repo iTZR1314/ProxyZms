@@ -124,9 +124,12 @@ impl KernelLifecycle {
         {
             // fd 走 helper → 内核注入。失败返回 Err,UI 保持 OFF,不误判成功。
             eprintln!("[zms] [LC] ensure_tun_fd...");
+            use std::os::fd::AsRawFd;
+            // fd 由 OwnedFd 持有:Go 侧 adopt 时 dup 自己的一份,这份在块结束时关闭,
+            // 无论 adopt / 之后的 set_tun 成败都不泄漏。
             let fd = helper::ensure_tun_fd(_cfg).await?;
-            eprintln!("[zms] [LC] got fd={}, calling adopt_tun_fd", fd);
-            kernel().adopt_tun_fd(fd).await?;
+            eprintln!("[zms] [LC] got fd={}, calling adopt_tun_fd", fd.as_raw_fd());
+            kernel().adopt_tun_fd(fd.as_raw_fd()).await?;
             eprintln!("[zms] [LC] adopt_tun_fd OK, calling set_tun(true)");
         }
 

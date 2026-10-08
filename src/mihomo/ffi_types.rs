@@ -40,6 +40,16 @@ pub struct ApplyResult {
     pub warning: Option<String>,
 }
 
+/// `proxyzms_get_diag` 的 data:Go 运行时内存 / 协程快照。
+/// Go 侧还输出 heap_alloc / sys / num_gc,UI 暂不展示,serde 默认忽略未知字段。
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct GoDiag {
+    #[serde(default)]
+    pub heap_inuse: u64,
+    #[serde(default)]
+    pub goroutines: u64,
+}
+
 /// `proxyzms_get_traffic` 的 data(瞬时 `Now()` 或累计 `Total()`)。
 #[allow(dead_code)] // PR-2 流量直读启用
 #[derive(Debug, Clone, Copy, Default, Deserialize)]

@@ -12,11 +12,13 @@ use dioxus::prelude::*;
 mod autostart;
 mod bootstrap;
 mod config;
+mod diag;
 mod format;
 #[cfg(target_os = "macos")]
 mod helper;
 mod mihomo;
 mod node_notes;
+mod quit;
 #[cfg(feature = "desktop")]
 mod theme;
 mod views;
@@ -193,23 +195,17 @@ fn main() {
         return;
     }
 
-    // Ctrl-C / SIGTERM 时:通知内核 shutdown(Go 端 listener/executor 停)再退出。
-    // handler 中不能 await;停下窗口渲染前给一个短暂上限即可(shutdown 通常 <100ms)。
+    // Ctrl-C / SIGTERM:清理(停内核、macOS 释放 helper 的 utun)后退出。
+    // 清理每一步都有时限,内核卡住也不会收不了 Ctrl-C。
     let _ = ctrlc::set_handler(|| {
-        if let Ok(rt) = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-        {
-            // current_thread 不能跑 blocking task → 用一个短而急的 multi线程 runtime;
-            // 内核 FFI 都是 spawn_blocking 封装的,与 multi 兼容
-            let _ = rt.block_on(mihomo::kernel().shutdown());
-        }
+        quit::cleanup();
         std::process::exit(0);
     });
 
     #[cfg(feature = "desktop")]
     {
         use dioxus::desktop::tao::dpi::LogicalSize;
+        use dioxus::desktop::tao::event::Event;
         use dioxus::desktop::tao::window::Icon;
         use dioxus::desktop::{Config, WindowBuilder, WindowCloseBehaviour};
 
@@ -258,7 +254,14 @@ fn main() {
             } else {
                 (255, 255, 255, 255)
             })
-            .with_custom_head(custom_head);
+            .with_custom_head(custom_head)
+            // 事件循环销毁时同样清理:macOS 的 Cmd+Q / Dock「退出」走
+            // applicationWillTerminate → LoopDestroyed,既不经过托盘菜单也不是信号。
+            .with_custom_event_handler(|event, _| {
+                if matches!(event, Event::LoopDestroyed) {
+                    quit::cleanup();
+                }
+            });
 
         // 隐藏 Windows/Linux 上的默认菜单栏(Window / Edit / Help)。
         // macOS 保留:其 Edit 菜单提供 Cmd+C/V/X 等复制粘贴快捷键。
@@ -431,19 +434,7 @@ fn handle_menu_select(
         });
     } else if id == TRAY_QUIT_ID {
         eprintln!("[zms] 退出:停止内核并退出程序");
-        // shutdown 完成后退出;Go 本体走 executor.Shutdown,
-        // 当前线程 1s 内若还没干净,也强 exit(不 hang)。
-        let _ = std::thread::Builder::new()
-            .name("ffi-shutdown".into())
-            .spawn(|| {
-                if let Ok(rt) = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                {
-                    let _ = rt.block_on(mihomo::kernel().shutdown());
-                }
-            })
-            .map(|t| t.join());
+        quit::cleanup();
         std::process::exit(0);
     }
 }

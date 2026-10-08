@@ -26,6 +26,10 @@ var (
 	isInit        atomic.Bool
 	isRunning     atomic.Bool
 	homeDir       string
+	// adoptedFD:Go 侧 dup 出来、尚未交给 mihomo 的 TUN fd(configMu 保护)。
+	// setTun 之后所有权归 mihomo(sing-tun 的 os.File),这里清零;
+	// 没等到 setTun 就被替换 / shutdown 时由本包关闭。
+	adoptedFD int
 )
 
 func initKernel(home string) error {
@@ -61,6 +65,10 @@ func stopKernel() error {
 	isRunning.Store(false)
 	listener.Cleanup()
 	currentConfig = nil
+	if adoptedFD > 0 {
+		closeFD(adoptedFD)
+		adoptedFD = 0
+	}
 	isInit.Store(false)
 	executor.Shutdown()
 	return nil
@@ -103,6 +111,12 @@ func setTun(enable bool) error {
 	}
 	currentConfig.General.Tun.Enable = enable
 	updateListenersLocked(currentConfig)
+	// 不论 mihomo 是否接管成功,待用 fd 都已交棒,Go 侧不再持有。
+	adoptedFD = 0
+	if !enable {
+		// 监听已关(连带关了 fd);清掉过期编号,免得 fd 号被复用后误被当作 TUN fd 接管。
+		currentConfig.General.Tun.FileDescriptor = 0
+	}
 	return nil
 }
 
@@ -154,9 +168,14 @@ func getTunSetupJSON() (string, error) {
 	return string(raw), nil
 }
 
-// adoptTunFD:macOS helper 注入的外部 utun fd。写入 currentConfig.General.Tun.FileDescriptor,
-// 使得下一次 setTun(true) 走"接管既有 fd"路径而不是自己 connect(utun_control).
-// fd <0 表示清除(回到自创建路径——需要 root)。idempotent。
+// adoptTunFD:macOS helper 经 SCM_RIGHTS 传来的 utun fd。
+// 所有权约定:调用方(Rust)始终自己关闭传入的 fd;这里 dup 一份写入
+// currentConfig.General.Tun.FileDescriptor,让下一次 setTun(true) 走"接管既有 fd"
+// 路径(而不是自己 connect utun_control,那需要 root)。dup 之后交给 mihomo 的
+// sing-tun,TUN 关闭时由它的 os.File 释放。
+// fd <= 0 表示清除:sing-tun 以 0 判定"未提供 fd",-1 会被当成真实 fd 而失败。
+// 已知残留:mihomo 创建 TUN 失败且尚未接管 fd 时这份 dup 会留着——mihomo 内部
+// 不暴露 fd 是否已被关闭,强行 close 有误关已被复用的 fd 号的风险,宁可漏一个。
 func adoptTunFD(fd int) error {
 	if err := ensureInit(); err != nil {
 		return err
@@ -166,7 +185,21 @@ func adoptTunFD(fd int) error {
 	if currentConfig == nil || currentConfig.General == nil {
 		return errors.New("config not applied")
 	}
-	currentConfig.General.Tun.FileDescriptor = fd
+	// 上一份 dup 若一直没被 setTun 取走,在此回收,避免反复点 TUN 开关时累积
+	if adoptedFD > 0 {
+		closeFD(adoptedFD)
+		adoptedFD = 0
+	}
+	if fd <= 0 {
+		currentConfig.General.Tun.FileDescriptor = 0
+		return nil
+	}
+	dup, err := dupFD(fd)
+	if err != nil {
+		return fmt.Errorf("dup tun fd: %w", err)
+	}
+	adoptedFD = dup
+	currentConfig.General.Tun.FileDescriptor = dup
 	return nil
 }
 

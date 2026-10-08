@@ -13,7 +13,7 @@ use std::os::raw::{c_char, c_int, c_void};
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
 
-use super::ffi_types::{CoreEvent, DelayResponse, Envelope, Traffic};
+use super::ffi_types::{CoreEvent, DelayResponse, Envelope, GoDiag, Traffic};
 use super::types::{Connections, Proxies};
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -47,6 +47,7 @@ extern "C" {
     fn proxyzms_close_connection(id: *mut c_char) -> *mut c_char;
     fn proxyzms_get_traffic(total: c_int) -> *mut c_char;
     fn proxyzms_update_subscription(name: *mut c_char) -> *mut c_char;
+    fn proxyzms_get_diag() -> *mut c_char;
     fn proxyzms_free_string(s: *mut c_char);
 }
 
@@ -95,10 +96,6 @@ pub struct Kernel {
     #[allow(dead_code)] // PR-2 事件流接线后放开
     events: Arc<Mutex<Option<UnboundedSender<CoreEvent>>>>,
 }
-
-// FFI 导出均已确认内部线程安全(Go runtime + configMu);回调 ctx 只读。
-unsafe impl Send for Kernel {}
-unsafe impl Sync for Kernel {}
 
 static KERNEL: OnceLock<Kernel> = OnceLock::new();
 
@@ -161,9 +158,11 @@ impl Kernel {
     /// `init(home_dir)`:仅设 `constant.SetHomeDir`,不启动任何 listener。
     pub async fn init(&self, home_dir: &Path) -> Result<(), String> {
         let home = c_string(&home_dir.to_string_lossy())?;
-        blocking(move || unsafe { parse_envelope(&read_json(|| proxyzms_init(home.into_raw()))?) })
-            .await
-            .map(|_: bool| ())
+        blocking(move || unsafe {
+            parse_envelope(&read_json(|| proxyzms_init(home.as_ptr().cast_mut()))?)
+        })
+        .await
+        .map(|_: bool| ())
     }
 
     /// `apply_config(yaml, selected_map)`:整个 YAML 文本推给内核接管
@@ -178,7 +177,7 @@ impl Kernel {
         blocking(move || unsafe {
             // data 可能是 {"warning":..} 或 true(无 warning 时)
             let v: serde_json::Value = parse_envelope(&read_json(|| {
-                proxyzms_apply_config(yaml.into_raw(), map.into_raw())
+                proxyzms_apply_config(yaml.as_ptr().cast_mut(), map.as_ptr().cast_mut())
             })?)?;
             Ok(v.get("warning")
                 .and_then(|w| w.as_str())
@@ -190,9 +189,13 @@ impl Kernel {
 
     /// `shutdown`:停 listener + executor,内核进入未初始化状态(可再 `init`)。
     pub async fn shutdown(&self) -> Result<(), String> {
-        blocking(|| unsafe { parse_envelope(&read_json(|| proxyzms_shutdown())?) })
-            .await
-            .map(|_: bool| ())
+        blocking(|| kernel().shutdown_blocking()).await
+    }
+
+    /// `shutdown` 的同步版本,给退出清理(Ctrl-C / 托盘退出 / 事件循环销毁)用:
+    /// 这些路径不在 tokio 里,没必要为一次 FFI 调用临时建 runtime。
+    pub fn shutdown_blocking(&self) -> Result<(), String> {
+        unsafe { parse_envelope::<bool>(&read_json(|| proxyzms_shutdown())?) }.map(|_| ())
     }
 
     /// 内核是否处于 running(已 init + apply_config 过)。PR-2 lifecycle 用。
@@ -206,7 +209,7 @@ impl Kernel {
     pub async fn set_mode(&self, mode: &str) -> Result<(), String> {
         let mode = c_string(mode)?;
         blocking(move || unsafe {
-            parse_envelope(&read_json(|| proxyzms_set_mode(mode.into_raw()))?)
+            parse_envelope(&read_json(|| proxyzms_set_mode(mode.as_ptr().cast_mut()))?)
         })
         .await
         .map(|_: bool| ())
@@ -235,8 +238,9 @@ impl Kernel {
         .map(|_: bool| ())
     }
 
-    /// 注入 macOS helper 建的 utun fd。下一次 `set_tun(true)` 将接管它。
-    /// fd <0 清除注入(回到自创建路径,需 root)。
+    /// 注入 macOS helper 建的 utun fd。Go 侧会 dup 一份留给下一次 `set_tun(true)`
+    /// 交给 mihomo;**调用方继续持有并负责关闭传入的 fd**。
+    /// fd <= 0 清除注入(回到自创建路径,需 root)。
     #[cfg(target_os = "macos")]
     pub async fn adopt_tun_fd(&self, fd: i32) -> Result<(), String> {
         blocking(move || unsafe { parse_envelope(&read_json(|| proxyzms_adopt_tun(fd))?) })
@@ -253,7 +257,9 @@ impl Kernel {
     pub async fn set_log_level(&self, level: &str) -> Result<(), String> {
         let level = c_string(level)?;
         blocking(move || unsafe {
-            parse_envelope(&read_json(|| proxyzms_set_log_level(level.into_raw()))?)
+            parse_envelope(&read_json(|| {
+                proxyzms_set_log_level(level.as_ptr().cast_mut())
+            })?)
         })
         .await
         .map(|_: bool| ())
@@ -264,7 +270,9 @@ impl Kernel {
     pub async fn validate_config(&self, yaml: &str) -> Result<(), String> {
         let yaml = c_string(yaml)?;
         blocking(move || unsafe {
-            parse_envelope(&read_json(|| proxyzms_validate_config(yaml.into_raw()))?)
+            parse_envelope(&read_json(|| {
+                proxyzms_validate_config(yaml.as_ptr().cast_mut())
+            })?)
         })
         .await
         .map(|_: bool| ())
@@ -274,13 +282,18 @@ impl Kernel {
         blocking(|| unsafe { parse_envelope(&read_json(|| proxyzms_get_proxies())?) }).await
     }
 
+    /// Go 运行时内存 / goroutine 快照(设置页「诊断」用)。不要求内核已 init。
+    pub async fn get_diag(&self) -> Result<GoDiag, String> {
+        blocking(|| unsafe { parse_envelope(&read_json(|| proxyzms_get_diag())?) }).await
+    }
+
     /// 在 Selector 组里选节点;`name == ""` 由 Go 端 `ForceSet("")` 清空。
     pub async fn select_proxy(&self, group: &str, name: &str) -> Result<(), String> {
         let group = c_string(group)?;
         let name = c_string(name)?;
         blocking(move || unsafe {
             parse_envelope(&read_json(|| {
-                proxyzms_select_proxy(group.into_raw(), name.into_raw())
+                proxyzms_select_proxy(group.as_ptr().cast_mut(), name.as_ptr().cast_mut())
             })?)
         })
         .await
@@ -298,7 +311,11 @@ impl Kernel {
         let url = c_string(url)?;
         blocking(move || unsafe {
             parse_envelope(&read_json(|| {
-                proxyzms_test_delay(name.into_raw(), url.into_raw(), timeout_ms)
+                proxyzms_test_delay(
+                    name.as_ptr().cast_mut(),
+                    url.as_ptr().cast_mut(),
+                    timeout_ms,
+                )
             })?)
         })
         .await
@@ -313,7 +330,9 @@ impl Kernel {
     pub async fn close_connection(&self, id: &str) -> Result<(), String> {
         let id = c_string(id)?;
         blocking(move || unsafe {
-            parse_envelope(&read_json(|| proxyzms_close_connection(id.into_raw()))?)
+            parse_envelope(&read_json(|| {
+                proxyzms_close_connection(id.as_ptr().cast_mut())
+            })?)
         })
         .await
         .map(|_: bool| ())
@@ -338,7 +357,7 @@ impl Kernel {
         let name = c_string(name)?;
         blocking(move || unsafe {
             parse_envelope(&read_json(|| {
-                proxyzms_update_subscription(name.into_raw())
+                proxyzms_update_subscription(name.as_ptr().cast_mut())
             })?)
         })
         .await

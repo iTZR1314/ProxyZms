@@ -226,6 +226,15 @@ func proxyzms_update_subscription(name *C.char) *C.char {
 	return okBool(true)
 }
 
+//export proxyzms_get_diag
+func proxyzms_get_diag() *C.char {
+	data, err := getDiagJSON()
+	if err != nil {
+		return errPayload(err)
+	}
+	return rawJsonString(data)
+}
+
 //export proxyzms_free_string
 func proxyzms_free_string(s *C.char) {
 	if s != nil {
