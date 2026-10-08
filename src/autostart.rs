@@ -3,6 +3,8 @@
 //!
 //! - **macOS**:写 `~/Library/LaunchAgents/<bundle_id>.plist`,`RunAtLoad=true`;
 //!   下次登录由 launchd 自动加载。关闭 = 删文件。
+//!   ⚠️ 光有 plist 不够:launchd 的 disabled 覆盖表优先于 plist,所以开启时还要
+//!   `launchctl enable`,`is_enabled` 也要同时看这张表,否则勾选框会显示"开"但实际不生效。
 //! - **Windows**:`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`,
 //!   `reg add/delete/query`。沿用 `mihomo/process` 的 spawn_blocking + Command 模式,
 //!   不引 `winreg` 依赖。
@@ -24,6 +26,11 @@ const WINDOWS_RUN_VALUE: &str = "ProxyZms";
 mod imp {
     use super::LAUNCH_AGENT_LABEL;
     use std::path::PathBuf;
+    use std::process::Command;
+
+    extern "C" {
+        fn getuid() -> u32;
+    }
 
     fn plist_path() -> Result<PathBuf, String> {
         let home = dirs::home_dir().ok_or_else(|| "无法定位用户主目录".to_string())?;
@@ -32,8 +39,31 @@ mod imp {
             .join(format!("{LAUNCH_AGENT_LABEL}.plist")))
     }
 
+    /// 本用户 GUI 域,如 `gui/501`。
+    fn gui_domain() -> String {
+        format!("gui/{}", unsafe { getuid() })
+    }
+
+    /// launchd 的 disabled 覆盖表(`launchctl disable`、系统设置 → 登录项里关掉开关都会写入)
+    /// 优先级高于 plist:label 被标成 disabled 时,plist 再正确、`RunAtLoad` 再为 true 也不会被加载。
+    fn is_disabled_in_launchd() -> bool {
+        let Ok(out) = Command::new("launchctl")
+            .args(["print-disabled", &gui_domain()])
+            .output()
+        else {
+            return false;
+        };
+        let needle = format!("\"{LAUNCH_AGENT_LABEL}\" =>");
+        String::from_utf8_lossy(&out.stdout).lines().any(|line| {
+            // 新系统写 disabled/enabled,旧系统写 true/false
+            line.trim()
+                .strip_prefix(&needle)
+                .is_some_and(|v| matches!(v.trim(), "disabled" | "true"))
+        })
+    }
+
     pub fn is_enabled() -> bool {
-        plist_path().map(|p| p.exists()).unwrap_or(false)
+        plist_path().map(|p| p.exists()).unwrap_or(false) && !is_disabled_in_launchd()
     }
 
     pub fn set_enabled(enable: bool) -> Result<(), String> {
@@ -50,6 +80,16 @@ mod imp {
                     .map_err(|e| format!("创建 LaunchAgents 目录失败: {e}"))?;
             }
             std::fs::write(&path, plist).map_err(|e| format!("写入 plist 失败: {e}"))?;
+            // 清掉 disabled 覆盖,否则 plist 写对了下次登录也不会被加载。
+            // 只 enable、不 bootstrap:bootstrap 会因 RunAtLoad 立刻再拉起一份自己。
+            let target = format!("{}/{LAUNCH_AGENT_LABEL}", gui_domain());
+            let status = Command::new("launchctl")
+                .args(["enable", &target])
+                .status()
+                .map_err(|e| format!("调用 launchctl enable 失败: {e}"))?;
+            if !status.success() {
+                return Err(format!("launchctl enable 退出码 {status}"));
+            }
         } else if path.exists() {
             std::fs::remove_file(&path).map_err(|e| format!("删除 plist 失败: {e}"))?;
         }
