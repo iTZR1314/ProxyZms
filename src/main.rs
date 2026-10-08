@@ -226,7 +226,9 @@ fn main() {
             .with_window_icon(icon)
             // 默认窗口宽高(逻辑像素),并设置最小尺寸
             .with_inner_size(LogicalSize::new(900.0, 825.0))
-            .with_min_inner_size(LogicalSize::new(720.0, 480.0));
+            .with_min_inner_size(LogicalSize::new(720.0, 480.0))
+            // 开机自启动拉起时不弹窗口,只留托盘;dioxus 会等 webview 加载完再按这个值决定显示与否
+            .with_visible(!autostart::launched_at_login());
 
         // 把 CSS 内容直接内联进初始 HTML 的 <head>(编译期 include_str! 嵌入)。
         // 不依赖 asset 路径解析 —— 发布版/开发版表现一致;且渲染阻塞,无 FOUC。
@@ -422,6 +424,7 @@ fn handle_menu_select(
             if lc.0.set_tun(target, &cfg).await.is_ok() {
                 tun_state.set(target);
                 config.write().tun_enable = target;
+                let _ = config.read().save();
             }
         });
     } else if let Some((group, name)) = proxy_actions.read().get(id.as_ref()).cloned() {
@@ -467,7 +470,14 @@ fn App() -> Element {
     // 挂载后设置 Dock 图标(此时 NSApplication 已就绪)
     use_effect(|| {
         #[cfg(target_os = "macos")]
-        set_dock_icon();
+        {
+            set_dock_icon();
+            // 开机自启动:窗口不显示,Dock 图标也收起,只留菜单栏托盘。
+            // 之后 show_main_window 会把 Regular 策略和 Dock 图标恢复回来。
+            if autostart::launched_at_login() {
+                set_dock_visible(false);
+            }
+        }
     });
 
     // 集中遥测:全应用仅有的两个控制器轮询循环。各视图改为从 `Telemetry` context

@@ -388,7 +388,7 @@ pub fn Settings() -> Element {
                             div { class: "text-sm font-medium", "开机启动施展魔法" }
                             div { class: "mt-1 text-xs text-neutral-500 leading-relaxed",
                                 if autostart_supported {
-                                    "登录系统后自动拉起。macOS 写入 LaunchAgent;Windows 写入注册表 Run 项。"
+                                    "登录系统后静默拉起并自动开启 TUN（不显示主界面，仅驻留托盘）。macOS 写入 LaunchAgent；Windows 写入注册表 Run 项。"
                                 } else {
                                     "当前平台不支持此选项。"
                                 }

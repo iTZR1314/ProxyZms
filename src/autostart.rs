@@ -11,6 +11,13 @@
 //!   ⚠️ app 因 manifest 是 `requireAdministrator`,登录时会触发 UAC 弹窗
 //!   —— 现阶段接受;真嫌烦可改 Task Scheduler `/rl highest`。
 //! - **其它平台**:不支持,UI 应把开关 disabled。
+//!
+//! 自启动项都带 [`LAUNCH_ARG`],程序靠它分辨"登录时被系统拉起"和"用户手动打开":
+//! 前者不显示主窗口(macOS 同时收起 Dock 图标,只留托盘)并自动开 TUN,后者行为不变。
+//! 旧版写入的启动项不带该参数,重新勾选一次才会生效。
+
+/// 自启动项附带的启动参数,见 [`launched_at_login`]。
+pub const LAUNCH_ARG: &str = "--autostart";
 
 #[allow(dead_code)]
 const LAUNCH_AGENT_LABEL: &str = "top.zhoumaosen.proxyzms";
@@ -24,7 +31,7 @@ const WINDOWS_RUN_VALUE: &str = "ProxyZms";
 
 #[cfg(target_os = "macos")]
 mod imp {
-    use super::LAUNCH_AGENT_LABEL;
+    use super::{LAUNCH_AGENT_LABEL, LAUNCH_ARG};
     use std::path::PathBuf;
     use std::process::Command;
 
@@ -107,6 +114,7 @@ mod imp {
     <key>ProgramArguments</key>
     <array>
         <string>{exe}</string>
+        <string>{arg}</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
@@ -115,6 +123,7 @@ mod imp {
 "#,
             label = LAUNCH_AGENT_LABEL,
             exe = xml_escape(exe_path),
+            arg = LAUNCH_ARG,
         )
     }
 
@@ -125,6 +134,19 @@ mod imp {
             .replace('"', "&quot;")
             .replace('\'', "&apos;")
     }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn plist_passes_launch_arg_after_escaped_exe() {
+            let plist = render_plist("/Applications/A & B.app/Contents/MacOS/x");
+            let exe = plist.find("A &amp; B").expect("exe 路径应转义后写入");
+            let arg = plist.find(LAUNCH_ARG).expect("应带自启动参数");
+            assert!(exe < arg, "参数必须排在可执行文件之后");
+        }
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -132,7 +154,7 @@ mod imp {
 
 #[cfg(target_os = "windows")]
 mod imp {
-    use super::{WINDOWS_RUN_KEY, WINDOWS_RUN_VALUE};
+    use super::{LAUNCH_ARG, WINDOWS_RUN_KEY, WINDOWS_RUN_VALUE};
     use std::os::windows::process::CommandExt;
     use std::process::Command;
 
@@ -161,8 +183,9 @@ mod imp {
                 .to_str()
                 .ok_or_else(|| "可执行文件路径含非 UTF-8 字符".to_string())?;
             // reg add 用 /d 直接传值;reg.exe 会把字符串原样写入注册表,
-            // 加 "" 包裹路径让 Windows 启动器把带空格的路径当成单一可执行文件。
-            let value = format!("\"{exe_str}\"");
+            // 加 "" 包裹路径让 Windows 启动器把带空格的路径当成单一可执行文件;
+            // 启动参数跟在引号外。
+            let value = format!("\"{exe_str}\" {LAUNCH_ARG}");
             let status = Command::new("reg")
                 .args([
                     "add",
@@ -223,6 +246,11 @@ pub fn is_enabled() -> bool {
 /// 设置开机自启动状态。同步,失败返回 UI 可直接显示的中文错误。
 pub fn set_enabled(enable: bool) -> Result<(), String> {
     imp::set_enabled(enable)
+}
+
+/// 本次是否由开机自启动拉起(命令行带 [`LAUNCH_ARG`])。
+pub fn launched_at_login() -> bool {
+    std::env::args().any(|a| a == LAUNCH_ARG)
 }
 
 /// 当前平台是否支持自启动开关。

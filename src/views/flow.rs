@@ -46,8 +46,10 @@ enum Setup {
 
 #[component]
 pub fn Flow() -> Element {
-    let config = use_context::<Signal<AppConfig>>();
+    let mut config = use_context::<Signal<AppConfig>>();
     let tele = use_context::<Telemetry>();
+    let lifecycle = use_context::<crate::Lifecycle>();
+    let mut tun_state = use_context::<crate::TunState>().0;
     let online = tele.online;
     let connections = tele.connections;
     // 派生时序状态(瞬时速率、48 格滚动曲线)统一在 App() 里算并写入 Telemetry,
@@ -55,6 +57,7 @@ pub fn Flow() -> Element {
     let down_speed = tele.down_speed;
     let up_speed = tele.up_speed;
     let history = tele.history;
+    let mut poke = tele.poke;
 
     let mut setup = use_signal(|| Setup::Checking);
     let mut started = use_signal(|| false);
@@ -74,12 +77,14 @@ pub fn Flow() -> Element {
     });
 
     // 引导流程:env=DIOXUS_NO_KERNEL ⇒ 跳过(供 UI 调试);否则初始化 → apply_config
-    use_future(move || async move {
-        // UI 调试:不拉起内核,跳过订阅下载 — 用来跑 dx serve 调样式
-        if std::env::var_os("DIOXUS_NO_KERNEL").is_some() {
-            setup.set(Setup::Ready);
-            return;
-        }
+    use_future(move || {
+        let lifecycle = lifecycle.clone();
+        async move {
+            // UI 调试:不拉起内核,跳过订阅下载 — 用来跑 dx serve 调样式
+            if std::env::var_os("DIOXUS_NO_KERNEL").is_some() {
+                setup.set(Setup::Ready);
+                return;
+            }
 
         // Flow 是路由页,每次从其他页面切回都会重新挂载。
         // 内核属于 App 进程级状态;已运行时不可再次 init/apply_config,
@@ -161,9 +166,35 @@ pub fn Flow() -> Element {
         if !persisted.log_level.trim().is_empty() {
             let _ = kernel().set_log_level(&persisted.log_level).await;
         }
-        // TUN 不在启动时自动开启 — macOS 需 helper 授权,用户点 ON 时才走提权流程
+        // 5) TUN 模式自动开启：
+        //    开机自启动(launched_at_login)或配置持久化 tun_enable=true 时自动开启 TUN。
+        let should_enable_tun = crate::autostart::launched_at_login() || persisted.tun_enable;
+        if should_enable_tun {
+            eprintln!(
+                "[zms] 启动触发开启 TUN (launched_at_login={}, tun_enable={})",
+                crate::autostart::launched_at_login(),
+                persisted.tun_enable
+            );
+            match lifecycle.0.set_tun(true, &persisted).await {
+                Ok(()) => {
+                    eprintln!("[zms] 启动时自动开启 TUN 成功");
+                    tun_state.set(true);
+                    if !persisted.tun_enable {
+                        let mut cfg = config.write();
+                        cfg.tun_enable = true;
+                        let _ = cfg.save();
+                    }
+                    poke.set(poke() + 1);
+                }
+                Err(e) => {
+                    eprintln!("[zms] 启动时自动开启 TUN 失败: {e}");
+                    error.set(Some(format!("开启 TUN 失败: {e}")));
+                }
+            }
+        }
 
         setup.set(Setup::Ready);
+        }
     });
 
     // FFI 内核是 spawn_blocking 调用,无 "start 进程" 概念;started 只作幂等锁
