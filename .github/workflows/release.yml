@@ -134,8 +134,9 @@ jobs:
           staging=$(mktemp -d)
           cp -R "$app" "$staging/"
           ln -s /Applications "$staging/Applications"
-          # .app 已复制到 staging；删掉 Rust/Go 中间产物腾空间给 hdiutil。
-          cargo clean
+          # .app 已复制到 staging；彻底删掉 target 目录及 Go 编译缓存腾出磁盘空间给 hdiutil。
+          rm -rf target
+          go clean -cache || true
           hdiutil create -volname "施展魔法" -srcfolder "$staging" -ov -format UDZO \
             "$PWD/artifacts/ProxyZms-${{ matrix.name }}.dmg"
           rm -rf "$staging"
